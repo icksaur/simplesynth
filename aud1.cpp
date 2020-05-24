@@ -1,5 +1,6 @@
 #include <iostream>
 #include <cmath>
+#include <ctime>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_main.h>
 
@@ -20,18 +21,21 @@ const unsigned short sampleRange = 32767;
 
 int gate;
 
+const float envelopePopThreshold = 0.003;
+
 struct Envelope {
     float a, d, s, r;
     float t;
     int _gate;
     char state; 
+    float amp;
     void trigger() {
         _gate = 1;
         state = 0; 
         t = 0;
     }
     void process(float * samples, int count, int gate) {
-        float m = 0;
+        float amp1;
         for (int i=0;i<count;i++) {
             if (_gate && !gate) {
                 if (state < 3) {
@@ -42,7 +46,7 @@ struct Envelope {
             switch(state) {
             case 0:
                 if(a && t < 1) {
-                    m = t;
+                    amp1 = t;
                     t += 1 / a / (float)frequency;
                     break;
                 }
@@ -50,7 +54,7 @@ struct Envelope {
                 state++;
             case 1:
                 if (d && state < 1) {
-                    m = (1 - t * (1 - s));
+                    amp1 = (1 - t * (1 - s));
                     t += 1 / d / (float)frequency;
                     if (t >= 0) {
                         state++;
@@ -60,20 +64,25 @@ struct Envelope {
                 t = 0;
                 state++;
             case 2:
-                m = s;
+                amp1 = s;
                 break;
             case 3:
                 if (r && t < 1) {
-                    m = s * (1-t);
+                    amp1 = s * (1-t);
                     t += 1 / r / frequency;
                     break;
                 }
                 t = 0;
                 state = 4;
             case 4:
-                m = 0;
+                amp1 = 0;
             }
-            samples[i] *= m;
+            float ampDif = amp1 - amp;
+            if (abs(ampDif) > envelopePopThreshold) {
+                amp1 = amp + copysign(envelopePopThreshold, ampDif);
+            }
+            samples[i] *= amp1;
+            amp = amp1;
         }
     }
 };
@@ -81,9 +90,9 @@ struct Envelope {
 const float fade = 0.05;
 
 struct Frequency {
+    float glide;
     float freq;
     float freq0;
-    float glide;
     float t;
     void generate(float * samples, int count) {
         if (freq != freq0 && t >= 1) {
@@ -92,6 +101,9 @@ struct Frequency {
         for (int i = 0; i < count; i++) {
             float f = (freq * t + freq0 * (1 - t));
             t += 1 / (float)frequency / glide;
+            if (t >= 1) {
+                t = 1; freq0 = freq;
+            }
             samples[i] = f;
         }
     }
@@ -101,12 +113,14 @@ struct Freq2Signal {
     float sine;
     float tri;
     float square;
+    float noise;
     float t;
-    void generate(float * samples, int count) {
+    void process(float * samples, int count) {
         for (int i=0; i<count; i++) {
             float h = sin(2.0 * M_PI * t) * sine;
             h += (2.0 * t - 1.0) * tri;
             h += (t < 0.5 ? -1 : 1) * square;
+            h += (float)(rand() / RAND_MAX) * noise;
             t += samples[i] / frequency;
             samples[i] = h;
             t = fmod(t, 1);
@@ -114,55 +128,26 @@ struct Freq2Signal {
     }
 };
 
-struct Signal {
-    float freq;
-    float sine;
-    float tri;
-    float square;
-    float freq0;
-    float t;
-    float fadet;
-    void generate(float * samples, int count) {
-        if (freq != freq0 && fadet>=1) {
-            fadet = 0;
-        }
-        for (int i=0; i<count; i++) {
-            float f = (freq * fadet + freq0 * (1 - fadet));
-            float h = sin(2.0 * M_PI * t) * sine;
-            h += (2.0 * t - 1.0) * tri;
-            h += (t < 0.5 ? -1 : 1) * square;
-            t += f / frequency;
-            fadet += 1 / (float)frequency / fade;
-            if (fadet >= 1) {
-                fadet = 1;
-                freq0 = freq;
-            }
-
-            samples[i] = h;
-            t = fmod(t, 1);
-        }
-    }
-};
-
-Frequency freqGen{440, 440, 0.1};
+Frequency freqGen{0.001, 440, 440};
 Freq2Signal freq2Sig{ 1 };
-Signal voice {440, 1, 0, 0};
-Envelope env{0.1, 0.1, 0.8, 1.0, 0, 0, 4};
+Envelope env{0, 0.3, 0.2, 0.5, 0, 0, 4};
 
 void fillAudio(void *unused, Uint8 *stream, int len) {
-    voice.generate((float*)stream, len/4);
+    freqGen.generate((float*)stream, len / 4);
+    freq2Sig.process((float*)stream, len / 4);
     env.process((float*)stream, len/4, gate);
 }
 
 void noteOn(SDL_Event & e, int note) {
     if (e.key.repeat) return;
     gate++;
-    //voice.freq = notes[note];
+    freqGen.freq = notes[note];
 
     env.trigger();
 }
 
 int main(int argc, char *argv[]) {
+    srand(time(0));
     if( SDL_Init(SDL_INIT_TIMER | SDL_INIT_AUDIO ) <0 ) {
         cout << "Unable to init SDL: " << SDL_GetError() << endl;
         return 1;
@@ -197,6 +182,8 @@ int main(int argc, char *argv[]) {
 
     SDL_PauseAudio(0);
 
+    int octave = noteA4+12;
+
     bool running = true;
     SDL_Event event;
     while (running) {
@@ -205,25 +192,37 @@ int main(int argc, char *argv[]) {
             case SDL_KEYDOWN:
                 switch (event.key.keysym.sym) {
                 case SDLK_ESCAPE: running = false; break;
-                case SDLK_a: noteOn(event, noteA4); break;
-                case SDLK_s: noteOn(event, noteA4+2); break;
-                case SDLK_d: noteOn(event, noteA4+4); break;
-                case SDLK_f: noteOn(event, noteA4+5); break;
-                case SDLK_g: noteOn(event, noteA4+7); break;
-                case SDLK_h: noteOn(event, noteA4+9); break;
-                case SDLK_j: noteOn(event, noteA4+11); break;
-                case SDLK_k: noteOn(event, noteA4+12); break;
+                case SDLK_a: noteOn(event, octave); break;
+                case SDLK_w: noteOn(event, octave+1); break;
+                case SDLK_s: noteOn(event, octave+2); break;
+                case SDLK_e: noteOn(event, octave+3); break;
+                case SDLK_d: noteOn(event, octave+4); break;
+                case SDLK_f: noteOn(event, octave+5); break;
+                case SDLK_t: noteOn(event, octave+6); break;
+                case SDLK_g: noteOn(event, octave+7); break;
+                case SDLK_y: noteOn(event, octave+8); break;
+                case SDLK_h: noteOn(event, octave+9); break;
+                case SDLK_u: noteOn(event, octave+10); break;
+                case SDLK_j: noteOn(event, octave+11); break;
+                case SDLK_k: noteOn(event, octave+12); break;
                 case SDLK_F4: if (event.key.keysym.mod & KMOD_ALT) running = false; break;
+                case SDLK_PAGEDOWN: octave = octave ? octave-12 : octave; break;
+                case SDLK_PAGEUP: octave = octave < (12*7) ? octave+12 : octave; break;
                 }
                 break;
             case SDL_KEYUP:
                 switch (event.key.keysym.sym) {
                 case SDLK_a: gate--; break;
+                case SDLK_w: gate--; break;
                 case SDLK_s: gate--; break;
+                case SDLK_e: gate--; break;
                 case SDLK_d: gate--; break;
                 case SDLK_f: gate--; break;
+                case SDLK_t: gate--; break;
                 case SDLK_g: gate--; break;
+                case SDLK_y: gate--; break;
                 case SDLK_h: gate--; break;
+                case SDLK_u: gate--; break;
                 case SDLK_j: gate--; break;
                 case SDLK_k: gate--; break;
                 }
