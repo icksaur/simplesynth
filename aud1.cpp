@@ -53,13 +53,14 @@ struct Envelope {
                 t = 0;
                 state++;
             case 1:
-                if (d && state < 1) {
+                if (d && state < 2) {
                     amp1 = (1 - t * (1 - s));
                     t += 1 / d / (float)frequency;
-                    if (t >= 0) {
+                    if (t >= 1) {
                         state++;
                         t = 0;
                     }
+                    break;
                 }
                 t = 0;
                 state++;
@@ -120,21 +121,34 @@ struct Freq2Signal {
             float h = sin(2.0 * M_PI * t) * sine;
             h += (2.0 * t - 1.0) * tri;
             h += (t < 0.5 ? -1 : 1) * square;
-            h += (float)(rand() / RAND_MAX) * noise;
+            h += ((float)rand() / (float)RAND_MAX * 2.0 - 1.0) * noise;
             t += samples[i] / frequency;
             samples[i] = h;
-            t = fmod(t, 1);
+            t = t > 1 ? 0 : t; // fmod would be more accurate but generates artifact frequencies
+        }
+    }
+};
+
+
+struct LowPassFilter {
+    float smooth;
+    float beta;
+    void process(float * stream, int count) {
+        for (int i = 0; i < count; i++) {
+            smooth = stream[i] = smooth - (beta * (smooth - stream[i]));
         }
     }
 };
 
 Frequency freqGen{0.001, 440, 440};
-Freq2Signal freq2Sig{ 1 };
-Envelope env{0, 0.3, 0.2, 0.5, 0, 0, 4};
+Freq2Signal freq2Sig{ 1, 0, 0, 0 };
+Envelope env{0, 0, 1, 0, 0, 0, 4};
+LowPassFilter filter{ 0, 0.025 };
 
 void fillAudio(void *unused, Uint8 *stream, int len) {
     freqGen.generate((float*)stream, len / 4);
     freq2Sig.process((float*)stream, len / 4);
+    //filter.process((float*)stream, len / 4);
     env.process((float*)stream, len/4, gate);
 }
 
