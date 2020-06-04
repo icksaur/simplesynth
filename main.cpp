@@ -4,7 +4,8 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_main.h>
 
-/* linker options: -lmingw32 -lSDLmain -lSDL -mwindows */
+#include "GLObject.h"
+#include "glxw.h"
 
 using namespace std;
 
@@ -17,6 +18,15 @@ int gate;
 
 const float envelopePopThreshold = 0.003;
 
+SDL_Renderer * renderer;
+int graph[512];
+void renderState(float * samples, int count, float min = -1.0f, float max = 1.0f) {
+    int width = count < 512 ? count : 512;
+    float range = max - min;
+    for (int i = 0; i < width; i++) {
+        graph[i] = 512 - (samples[i] - min) / range * 512;
+    }
+}
 
 float noteFreqency(float a) {
     return 27.5f * pow(2.0f, (float)a);
@@ -90,8 +100,6 @@ struct Envelope {
     }
 };
 
-const float fade = 0.05;
-
 struct Note {
     float glide;
     float note;
@@ -126,17 +134,6 @@ struct Frequency {
     }
 };
 
-SDL_Renderer * renderer;
-
-int graph[400];
-
-void renderState(float * samples, int count, float min = -1.0f, float max = 1.0f) {
-    int width = count < 400 ? count : 400;
-    float range = max - min;
-    for (int i = 0; i < width; i++) {
-        graph[i] = 400 - (samples[i] - min) / range * 400;
-    }
-}
 
 // Generates waveforms which will bend each sample by sample frequency.
 struct ModulatingSignal {
@@ -211,6 +208,57 @@ struct BasicFilter {
     }
 };
 
+const int delayBufferSize = 88211; // prime larger than 2 * 44100
+
+// explicit delay in sample count
+struct ExplicitDelay {
+    int delay;
+    float decay;
+    int read;
+    float buffer[delayBufferSize];
+    void process(float & sample) {
+        sample += buffer[read];
+        buffer[(read + delay) % delayBufferSize] = sample * decay;
+        read++;
+        read %= delayBufferSize;
+    }
+    float process(float * samples, int count) {
+        delay = delay > (frequency - 1) ? (frequency - 1) : delay;
+        for (int i = 0; i < count; i++) {
+            process(samples[i]);
+        }
+    }
+};
+
+struct AllPassDelay {
+    float k;
+    int delay;
+    float buffer[frequency];
+    int read;
+    void process(float * stream, int count) {
+        for (int i = 0; i < count; i++) {
+            float r1 = buffer[read] + stream[i] * k; // peek in delay
+            stream[i] = r1 * -k + buffer[read];
+            buffer[(read + delay) % frequency] = r1 * 0.5;
+            ++read %= frequency;
+        }
+    }
+
+};
+
+// Not sure what this does. It's a building block for other things.
+struct AllPassFilter {
+    float k;
+    float r;
+    void process(float * stream, int count) {
+        for (int i = 0; i < count; i++) {
+            float r1 = stream[i] + r * k;
+            stream[i] = r1 * -k + r;
+            r = r1;
+        }
+    }
+};
+
 struct WindowFilter {
     float last[window];
     int next;
@@ -227,8 +275,6 @@ struct WindowFilter {
         }
     }
 };
-
-const int delayBufferSize = 88211; // prime larger than 2 * 44100
 
 #define nwrap(i) i < 0 ? (float)delayBufferSize - i : i
 
@@ -251,23 +297,6 @@ struct Delay {
             buffer[write] = samples[i] * decay;
             write++;
             write %= delayBufferSize;
-        }
-    }
-};
-
-// explicit delay in sample count
-struct ExplicitDelay {
-    int delay;
-    float decay;
-    int read;
-    float buffer[delayBufferSize];
-    void process(float * samples, int count) {
-        delay = delay > (frequency - 1) ? (frequency - 1) : delay;
-        for (int i = 0; i < count; i++) {
-            samples[i] += buffer[read];
-            buffer[(read + delay) % delayBufferSize] = samples[i] * decay;
-            read++;
-            read %= delayBufferSize;
         }
     }
 };
@@ -334,6 +363,8 @@ FixedSignal fixedsig { 0, 1, 0, 0 };
 Envelope env{0, 0, 1, 0, 0, 0, 4};
 WindowFilter windowFilter;
 BasicFilter basicFilter{ 0.5 };
+AllPassFilter allPassFilter{ 0.5 };
+AllPassDelay allPassDelay{ -0.5, 22050 };
 Delay delay{ 0.5, 0.5 };
 Reverb reverb;
 CombinedReverb combinedReverb;
@@ -357,11 +388,11 @@ void fillAudio(void *unused, Uint8 *stream, int len) {
     modsig.process(FLOATSTREAM);
     env.process(FLOATSTREAM, gate);
     //combinedReverb.process(FLOATSTREAM);
-    delay.process(FLOATSTREAM);
+    //delay.process(FLOATSTREAM);
     if (mode == 0)
-        basicFilter.process(FLOATSTREAM);
-    else
-        windowFilter.process(FLOATSTREAM);
+        delay.process(FLOATSTREAM);
+    else if (mode == 1)
+        allPassDelay.process(FLOATSTREAM);
     renderState((float*)stream, len);
 }
 
@@ -373,15 +404,48 @@ void noteOn(SDL_Event & e, int note) {
     env.trigger();
 }
 
+#define WHITE 255,255,255,255
+#define BLACK 0,0,0,255
+const char * fullScreenTexturedQuadSource = R"(
+#if VERTEX_SHADER
+layout(location=0) in vec2 vertex;
+layout(location=1) in vec2 uv;
+out vec2 uvco;
+void main(void) {
+uvco = uv;
+gl_Position = vec4(vertex.xy, 0, 1);
+}
+#elif FRAGMENT_SHADER
+layout(binding = 0) uniform sampler2DArray textures;
+in vec2 uvco;
+void main() {
+    gl_FragColor = texture(textures, vec3(uvco.st, 0));
+}
+#endif
+)";
+
+void prepVAO() {
+    ShaderProgram program(fullScreenTexturedQuadSource);
+
+    VAOBuilder builder(1);
+    builder.addFloats(0, 0, 2).addFloats(0, 1, 2);
+    VAO vao(program, builder);
+
+    const float w = 0.5f;
+    float vertices[] = { -w,-w, 0,0, -w,w, 0,1, w,w, 1,1, w,-w, 1,0 };
+    vao.vertexData(vertices, sizeof(vertices));
+}
+
 int main(int argc, char *argv[]) {
     srand(time(0));
-    if( SDL_Init(SDL_INIT_TIMER | SDL_INIT_AUDIO ) <0 ) {
-        cout << "Unable to init SDL: " << SDL_GetError() << endl;
-        return 1;
-    }
+    int xrez = 512, yrez = 512;
+    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO);
+    SDL_Window * window = SDL_CreateWindow("test", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, xrez, xrez, SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI);
+    SDL_GLContext context = SDL_GL_CreateContext(window);
+
+    if (glxwInit()) return 0;
 
     int format = AUDIO_F32;
-
     SDL_AudioSpec desired, obtained;
     desired.freq = 44100;
     desired.format = format;
@@ -389,26 +453,31 @@ int main(int argc, char *argv[]) {
     desired.callback = fillAudio;
     desired.userdata = NULL;
     desired.channels = 1;
-
     if ( SDL_OpenAudio(&desired, &obtained) < 0 ) {
         fprintf(stderr, "AudioMixer, Unable to open audio: %s\n", SDL_GetError());
         return 1;
     }
-
     audioBufferSize = obtained.samples;
     sampleFrequency = obtained.freq;
-
-    /* if the format is 16 bit, two bytes are written for every sample */
     if (obtained.format != format) {
         fprintf(stderr, "did not get desired format\n");
         return 1;
     }
-
-    SDL_Window * window = SDL_CreateWindow(
-        "audio", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 400, 400, 0);
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-
     SDL_PauseAudio(0);
+
+    ShaderProgram program(fullScreenTexturedQuadSource);
+    VAOBuilder builder(1);
+    builder.addFloats(0, 0, 2).addFloats(0, 1, 2);
+    VAO vao(program, builder);
+    const float w = 1.0f;
+    float vertices[] = { -w,-w, 0,0, -w,w, 0,1, w,w, 1,1, w,-w, 1,0 };
+    vao.vertexData(vertices, sizeof(vertices));
+
+    unsigned graphBytesSize = 512 * 512 * 4;
+    char * graphBytes = new char[graphBytesSize];
+    unsigned * graphTexels = (unsigned*)graphBytes;
+    memset(graphBytes, 0, graphBytesSize);
+    ArrayTexture graphTexture(512, 1, graphBytes, graphBytesSize);
 
     int octave = noteA4;
 
@@ -464,15 +533,27 @@ int main(int argc, char *argv[]) {
                 break;
             }
         }
-        SDL_Delay(10);
-        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
-        SDL_RenderClear(renderer);
-        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-        for (int i = 0; i < 400; i++)
-            SDL_RenderDrawLine(renderer, i, 400, i, graph[i]);
-        SDL_RenderPresent(renderer);
+
+        for (int i = 0; i < 512; i++) {
+            for (int j = 0; j < 512; j++) {
+                unsigned texel = graph[i] < j ? 0xFFFFFFFF : 0x00000000;
+                graphTexels[512 * j + i] = texel;
+            }
+        }
+        glActiveTexture(GL_TEXTURE0 + 0);
+        graphTexture.bind();
+        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, 512, 512, 1, GL_RGBA, GL_UNSIGNED_BYTE, graphTexels);
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        program.use();
+        vao.bind();
+        glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+        SDL_GL_SwapWindow(window);
+        SDL_Delay(1000 / 120);
     }
-    printf("quitting\n");
-    SDL_Quit();
+
+exit:
+    SDL_GL_DeleteContext(context);
+    SDL_DestroyWindow(window);
     return 0;
 }
