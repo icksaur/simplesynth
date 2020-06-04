@@ -6,6 +6,7 @@
 
 #include "GLObject.h"
 #include "glxw.h"
+#include "gui.h"
 
 using namespace std;
 
@@ -222,7 +223,7 @@ struct ExplicitDelay {
         read++;
         read %= delayBufferSize;
     }
-    float process(float * samples, int count) {
+    void process(float * samples, int count) {
         delay = delay > (frequency - 1) ? (frequency - 1) : delay;
         for (int i = 0; i < count; i++) {
             process(samples[i]);
@@ -304,24 +305,42 @@ struct Delay {
 int baseDelay = 441;
 
 struct Reverb {
-    ExplicitDelay delays[10];
+    ExplicitDelay delays[8];
+    ExplicitDelay tapDelays[4];
+    float accum[1024];
+    float output[1024];
+    float krt;
+    int phase;
     Reverb() {
-        delays[0].delay = baseDelay + 29; delays[0].decay = 0.1;
-        delays[1].delay = baseDelay + 601; delays[1].decay = 0.2;
-        delays[2].delay = baseDelay + 1291; delays[2].decay = 0.4;
-        delays[3].delay = baseDelay + 2053; delays[3].decay = 0.6;
-        delays[4].delay = baseDelay + 2819; delays[4].decay = 0.7;
-        delays[5].delay = baseDelay + 3643; delays[5].decay = 0.8;
-        delays[6].delay = baseDelay + 4493; delays[6].decay = 0.7;
-        delays[7].delay = baseDelay + 5387; delays[7].decay = 0.6;
-        delays[8].delay = baseDelay + 6221; delays[8].decay = 0.2;
-        delays[9].delay = baseDelay + 7103; delays[9].decay = 0.1;
+        delays[0].delay = baseDelay + 29; delays[0].decay = 0.3;
+        delays[1].delay = baseDelay + 601; delays[1].decay = 0.5;
+        delays[2].delay = baseDelay + 1291; delays[2].decay = 0.7;
+        delays[3].delay = baseDelay + 2053; delays[3].decay = 0.9;
+        delays[4].delay = baseDelay + 2819; delays[4].decay = 0.9;
+        delays[5].delay = baseDelay + 3643; delays[5].decay = 0.7;
+        delays[6].delay = baseDelay + 4493; delays[6].decay = 0.5;
+        delays[7].delay = baseDelay + 5387; delays[7].decay = 0.3;
+
+        tapDelays[0].delay = baseDelay + 29; tapDelays[0].decay = 0.1;
+        tapDelays[1].delay = baseDelay + 601; tapDelays[1].decay = 0.1;
+        tapDelays[2].delay = baseDelay + 1291; tapDelays[2].decay = 0.1;
+        tapDelays[3].delay = baseDelay + 2053; tapDelays[3].decay = 0.1;
+
+        memset(accum, 0, 1024 * sizeof(float));
+        phase = 0;
+        krt = 0.1;
     }
 
     void process(float * samples, int count) {
-        for (int d = 0; d < 4; d++) {
-            delays[d].process(samples, count);
+        memset(output, 0, 1024 * sizeof(float));
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < count; j++) accum[j] += samples[j];
+            delays[2*i+0].process(accum, count);
+            delays[2*i+1].process(accum, count);
+            for (int j = 0; j < count; j++) output[j] += accum[j];
+            for (int j = 0; j < count; j++) accum[j] *= krt;
         }
+        for (int i = 0; i < count; i++) samples[i] = output[i];
     }
 };
 
@@ -389,9 +408,10 @@ void fillAudio(void *unused, Uint8 *stream, int len) {
     env.process(FLOATSTREAM, gate);
     //combinedReverb.process(FLOATSTREAM);
     //delay.process(FLOATSTREAM);
-    if (mode == 0)
-        delay.process(FLOATSTREAM);
-    else if (mode == 1)
+    if (mode == 0) {
+        reverb.process(FLOATSTREAM); // delay.process(FLOATSTREAM);
+        basicFilter.process(FLOATSTREAM);
+    } else if (mode == 1)
         allPassDelay.process(FLOATSTREAM);
     renderState((float*)stream, len);
 }
@@ -443,6 +463,15 @@ int main(int argc, char *argv[]) {
     SDL_Window * window = SDL_CreateWindow("test", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, xrez, xrez, SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI);
     SDL_GLContext context = SDL_GL_CreateContext(window);
 
+    struct OnExit {
+        SDL_Window * window;
+        SDL_GLContext context;
+        ~OnExit() {
+            SDL_GL_DeleteContext(context);
+            SDL_DestroyWindow(window);
+        }
+    } cleanup{ window, context };
+
     if (glxwInit()) return 0;
 
     int format = AUDIO_F32;
@@ -478,6 +507,8 @@ int main(int argc, char *argv[]) {
     unsigned * graphTexels = (unsigned*)graphBytes;
     memset(graphBytes, 0, graphBytesSize);
     ArrayTexture graphTexture(512, 1, graphBytes, graphBytesSize);
+
+    GUI gui;
 
     int octave = noteA4;
 
@@ -528,9 +559,9 @@ int main(int argc, char *argv[]) {
             case SDL_QUIT:
             running = false;
             break;
-            case SDL_MOUSEMOTION:
-                basicFilter.k = (float)event.motion.y / (float)400;
-                break;
+            case SDL_MOUSEMOTION: gui.pushMouseMotion(event.motion.x, 512 - event.motion.y); break;
+            case SDL_MOUSEBUTTONDOWN: if (event.button.button == SDL_BUTTON_LEFT) gui.pushMouseDown(0, event.button.x, 512-event.button.y); break;
+            case SDL_MOUSEBUTTONUP: if (event.button.button == SDL_BUTTON_LEFT) gui.pushMouseUp(0, event.button.x, 512-event.button.y); break;
             }
         }
 
@@ -548,6 +579,26 @@ int main(int argc, char *argv[]) {
         program.use();
         vao.bind();
         glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
+        static int x, y;
+        static char krtString[12];
+        gui.start(x, y, 300, 200, "params");
+        switch (mode) {
+        case 0:
+            gui.slider(reverb.krt, 0, 0, 150, 20);
+            sprintf_s(krtString, "%.2f krt", reverb.krt);
+            gui.label(150, 10, krtString);
+            gui.slider(basicFilter.k, 0, 25, 100, 20);
+            gui.label(150, 35, "filter");
+            if (gui.button(0, 50, 100, 20, "panic")) {
+                memset(reverb.accum, 0, sizeof(float) * 1024);
+                for (int i = 0; i < 8; i++) {
+                    memset(reverb.delays[i].buffer, 0, sizeof(float) * 88211);
+                }
+            }
+        }
+        gui.end();
+        gui.render();
         SDL_GL_SwapWindow(window);
         SDL_Delay(1000 / 120);
     }
