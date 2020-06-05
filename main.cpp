@@ -21,7 +21,10 @@ const int delayBufferSize = 88211; // prime larger than 2 * 44100
 
 SDL_Renderer * renderer;
 int graph[512];
+bool graphDirty = false;
 void renderState(float * samples, int count, float min = -1.0f, float max = 1.0f) {
+    if (!graphDirty) return;
+    graphDirty = false;
     int width = count < 512 ? count : 512;
     float range = max - min;
     for (int i = 0; i < width; i++) {
@@ -362,53 +365,6 @@ struct FreeVerb {
     }
 };
 
-struct SchroderReverb {
-    AllPassDelay * delays[3];
-    CombFilter * combs[4];
-    SchroderReverb() {
-        delays[0] = new AllPassDelay{0.7f, 1051};
-        delays[1] = new AllPassDelay{0.7f, 337};
-        delays[2] = new AllPassDelay{0.7f, 113};
-        combs[0] = new CombFilter{0.742f, 4799};
-        combs[1] = new CombFilter{0.733f, 4999};
-        combs[2] = new CombFilter{0.715f, 5399};
-        combs[3] = new CombFilter{0.697f, 5801};
-    }
-    ~SchroderReverb() {
-        delete delays[0];
-        delete delays[1];
-        delete delays[2];
-        delete combs[0];
-        delete combs[1];
-        delete combs[2];
-        delete combs[3];
-    }
-    void process(float * stream, int count) {
-        for (int i = 0; i < 3; i++) delays[i]->process(stream, count);
-        for (int i = 0; i < count; i++) {
-            float s = stream[i];
-            stream[i] = combs[0]->process(s) + combs[1]->process(s) + combs[2]->process(s) + combs[3]->process(s);
-        }
-    }
-};
-
-struct WindowFilter {
-    float last[window];
-    int next;
-    float avg;
-    float sum;
-
-    void process(float * stream, int count) {
-        for (int i = 0; i < count; i++) {
-            sum += stream[i];
-            sum -= last[next];
-            last[next] = stream[i];
-            stream[i] = sum / (float)window;
-            ++next %= window;
-        }
-    }
-};
-
 #define nwrap(i) i < 0 ? (float)delayBufferSize - i : i
 
 struct Delay {
@@ -436,96 +392,20 @@ struct Delay {
 
 int baseDelay = 441;
 
-struct Reverb {
-    ExplicitDelay delays[8];
-    ExplicitDelay tapDelays[4];
-    float accum[1024];
-    float output[1024];
-    float krt;
-    int phase;
-    Reverb() {
-        delays[0].delay = baseDelay + 29; delays[0].decay = 0.3;
-        delays[1].delay = baseDelay + 601; delays[1].decay = 0.5;
-        delays[2].delay = baseDelay + 1291; delays[2].decay = 0.7;
-        delays[3].delay = baseDelay + 2053; delays[3].decay = 0.9;
-        delays[4].delay = baseDelay + 2819; delays[4].decay = 0.9;
-        delays[5].delay = baseDelay + 3643; delays[5].decay = 0.7;
-        delays[6].delay = baseDelay + 4493; delays[6].decay = 0.5;
-        delays[7].delay = baseDelay + 5387; delays[7].decay = 0.3;
-
-        tapDelays[0].delay = baseDelay + 29; tapDelays[0].decay = 0.1;
-        tapDelays[1].delay = baseDelay + 601; tapDelays[1].decay = 0.1;
-        tapDelays[2].delay = baseDelay + 1291; tapDelays[2].decay = 0.1;
-        tapDelays[3].delay = baseDelay + 2053; tapDelays[3].decay = 0.1;
-
-        memset(accum, 0, 1024 * sizeof(float));
-        phase = 0;
-        krt = 0.1;
-    }
-
-    void process(float * samples, int count) {
-        memset(output, 0, 1024 * sizeof(float));
-        for (int i = 0; i < 4; i++) {
-            for (int j = 0; j < count; j++) accum[j] += samples[j];
-            delays[2*i+0].process(accum, count);
-            delays[2*i+1].process(accum, count);
-            for (int j = 0; j < count; j++) output[j] += accum[j];
-            for (int j = 0; j < count; j++) accum[j] *= krt;
-        }
-        for (int i = 0; i < count; i++) samples[i] = output[i];
-    }
-};
-
-struct CombinedReverb {
-    float decay;
-    int delays[10];
-    int read;
-    float buffer[delayBufferSize];
-    CombinedReverb() {
-        decay = 0.1;
-        delays[0] = 29;
-        delays[0] = 601;
-        delays[1] = 1291;
-        delays[2] = 2053;
-        delays[3] = 2819;
-        delays[4] = 3643;
-        delays[5] = 4493;
-        delays[6] = 5387;
-        delays[7] = 6221;
-        delays[8] = 7103;
-    }
-
-    void process(float * samples, int count) {
-       for (int i = 0; i < count; i++) {
-            samples[i] += buffer[read];
-            for (int j = 4; j < 9; j++) {
-                buffer[(read + delays[j]) % delayBufferSize] += samples[i] * decay;
-            }
-            read++;
-            read %= delayBufferSize;
-        }
-    }
-};
-
 Note noteGen{ 0.001, 4, 4 };
 Frequency noteFreq;
 ModulatingSignal modsig { 0, 1, 0, 0 };
 FixedSignal fixedsig { 0, 1, 0, 0 };
 Envelope env{0, 0, 1, 0, 0, 0, 4};
-WindowFilter windowFilter;
 BasicFilter basicFilter{ 0.5 };
 AllPassFilter allPassFilter{ 0.5 };
 AllPassDelay allPassDelay{ -0.5, 22050 };
 Delay delay{ 0.5, 0.5 };
-Reverb reverb;
-CombinedReverb combinedReverb;
-SchroderReverb schroderReverb;
 ExplicitDelay ed1{ 229, 0.5 };
 ExplicitDelay ed2{ 1069, 0.5 };
 ExplicitDelay ed3{ 3181, 0.5 };
 ExplicitDelay ed4{ 6053, 0.5 };
 ExplicitDelay ed5{ 7919, 0.5 };
-LBCF lcbf(.84, .2, 1557);
 FreeVerb freeVerb;
 LFO lfo{ 0.01, 0.5 };
 
@@ -544,11 +424,12 @@ void fillAudio(void *unused, Uint8 *stream, int len) {
     //delay.process(FLOATSTREAM);
     if (mode == 0) {
         freeVerb.process(FLOATSTREAM);
-        basicFilter.process(FLOATSTREAM);
     } else if (mode == 1) {
-        schroderReverb.process(FLOATSTREAM);
-        basicFilter.process(FLOATSTREAM);
+        allPassDelay.process(FLOATSTREAM);
+    } else {
+        delay.process(FLOATSTREAM);
     }
+    basicFilter.process(FLOATSTREAM);
     renderState((float*)stream, len);
 }
 
@@ -701,15 +582,15 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        memset(graphTexels, 0, sizeof(unsigned) * 512 * 512);
         for (int i = 0; i < 512; i++) {
             for (int j = 0; j < 512; j++) {
-                unsigned texel = graph[i] < j ? 0xFFFFFFFF : 0x00000000;
-                graphTexels[512 * j + i] = texel;
+                if (graph[i] < j) graphTexels[512 * j + i] = 0xFFFFFFFF;
             }
         }
         glActiveTexture(GL_TEXTURE0 + 0);
         graphTexture.bind();
-        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, 512, 512, 1, GL_RGBA, GL_UNSIGNED_BYTE, graphTexels);
+        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, 512, 512, 1, GL_RGB8, GL_UNSIGNED_BYTE, graphTexels);
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         program.use();
@@ -746,8 +627,9 @@ int main(int argc, char *argv[]) {
         }
         gui.end();
         gui.render();
+        graphDirty = true;
         SDL_GL_SwapWindow(window);
-        SDL_Delay(100);
+        SDL_Delay(1000/60);
     }
 
 exit:
