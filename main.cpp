@@ -1,4 +1,3 @@
-#include <iostream>
 #include <cmath>
 #include <ctime>
 #include <SDL2/SDL.h>
@@ -18,6 +17,7 @@ unsigned int audioBufferSize = 0;
 int gate;
 
 const float envelopePopThreshold = 0.003;
+const int delayBufferSize = 88211; // prime larger than 2 * 44100
 
 SDL_Renderer * renderer;
 int graph[512];
@@ -198,6 +198,28 @@ struct LFO {
 
 const int window = 7;
 
+// A delay with no feedback (first two statements of process are reversed)
+struct CombFilter {
+    float decay;
+    int delay;
+    int read;
+    float buffer[delayBufferSize];
+    float process(float sample) {
+        buffer[(read + delay) % delayBufferSize] = sample * decay;
+        sample += buffer[read];
+        read++;
+        read %= delayBufferSize;
+        return sample;
+    }
+    void process(float * samples, int count) {
+        delay = delay > (frequency - 1) ? (frequency - 1) : delay;
+        for (int i = 0; i < count; i++) {
+            samples[i] = process(samples[i]);
+        }
+    }
+
+};
+
 struct BasicFilter {
     float k;
     float r;
@@ -208,8 +230,6 @@ struct BasicFilter {
         }
     }
 };
-
-const int delayBufferSize = 88211; // prime larger than 2 * 44100
 
 // explicit delay in sample count
 struct ExplicitDelay {
@@ -244,7 +264,6 @@ struct AllPassDelay {
             ++read %= frequency;
         }
     }
-
 };
 
 // Not sure what this does. It's a building block for other things.
@@ -256,6 +275,119 @@ struct AllPassFilter {
             float r1 = stream[i] + r * k;
             stream[i] = r1 * -k + r;
             r = r1;
+        }
+    }
+};
+
+// from explanation at https://www.dsprelated.com/freebooks/pasp/Freeverb.html
+const int combSize = 3000;
+struct LowpassFeedbackCombFilter {
+    float damp, room;
+    int n;
+    int read;
+    float * buffer;
+    float onepole;
+    LowpassFeedbackCombFilter(float room, float damp, int delay) {
+        if (delay >= combSize) throw std::runtime_error("delay is too long");
+        this->damp = damp;
+        this->room = room;
+        this->n = delay;
+        buffer = new float[combSize]; // guess this could be n
+        memset(buffer, 0, sizeof(float) * combSize);
+        read = combSize - n;
+        onepole = 0.0f;
+    }
+    ~LowpassFeedbackCombFilter() {
+        delete[] buffer;
+    }
+    void process(float * stream, int count) {
+        for (int i = 0; i < count; i++) {
+            stream[i] = process(stream[i]);
+        }
+    }
+    float process(float x) {
+        float y = buffer[read]; // delay line
+        onepole = (1.0f - damp) / (1.0f - damp * onepole);
+        int write = (read + n) % combSize;
+        buffer[write] = x + room * onepole * y;
+        read = (read + 1) % combSize;
+        return y;
+    }
+};
+
+typedef LowpassFeedbackCombFilter LBCF;
+
+const float defaultRoom = 0.84f;
+const float allPassGain = 0.7f;
+
+struct FreeVerb {
+    LBCF * combs[8];
+    AllPassDelay * allpass[4];
+    FreeVerb() {
+        combs[0] = new LBCF(defaultRoom, .2, 1557);
+        combs[1] = new LBCF(defaultRoom, .2, 1617);
+        combs[2] = new LBCF(defaultRoom, .2, 1491);
+        combs[3] = new LBCF(defaultRoom, .2, 1422);
+        combs[4] = new LBCF(defaultRoom, .2, 1277);
+        combs[5] = new LBCF(defaultRoom, .2, 1356);
+        combs[6] = new LBCF(defaultRoom, .2, 1188);
+        combs[7] = new LBCF(defaultRoom, .2, 1116);
+        allpass[0] = new AllPassDelay{allPassGain, 225};
+        allpass[1] = new AllPassDelay{allPassGain, 556};
+        allpass[2] = new AllPassDelay{allPassGain, 441};
+        allpass[3] = new AllPassDelay{allPassGain, 341};
+    }
+    void set(float room, float damp) {
+        for (int i = 0; i < 8; i++) {
+            combs[i]->room = room;
+            combs[i]->damp = damp;
+        }
+    }
+    void panic() {
+        for (int i = 0; i < 8; i++) memset(combs[i]->buffer, 0, sizeof(float)*combSize);
+        for (int i = 0; i < 8; i++) combs[i]->onepole = 0.0f;
+        for (int i = 0; i < 4; i++) memset(allpass[i]->buffer, 0, sizeof(float)*frequency);
+    }
+    void process(float * stream, int count) {
+        for (int i = 0; i < count; i++) {
+            float out = 0;
+            for (int j = 0; j < 8; j++) {
+                out += combs[j]->process(stream[i]);
+            }
+            stream[i] = out;
+        }
+        for (int i = 0; i < 4; i++) {
+            allpass[i]->process(stream, count);
+        }
+    }
+};
+
+struct SchroderReverb {
+    AllPassDelay * delays[3];
+    CombFilter * combs[4];
+    SchroderReverb() {
+        delays[0] = new AllPassDelay{0.7f, 1051};
+        delays[1] = new AllPassDelay{0.7f, 337};
+        delays[2] = new AllPassDelay{0.7f, 113};
+        combs[0] = new CombFilter{0.742f, 4799};
+        combs[1] = new CombFilter{0.733f, 4999};
+        combs[2] = new CombFilter{0.715f, 5399};
+        combs[3] = new CombFilter{0.697f, 5801};
+    }
+    ~SchroderReverb() {
+        delete delays[0];
+        delete delays[1];
+        delete delays[2];
+        delete combs[0];
+        delete combs[1];
+        delete combs[2];
+        delete combs[3];
+    }
+    void process(float * stream, int count) {
+        for (int i = 0; i < 3; i++) delays[i]->process(stream, count);
+        for (int i = 0; i < count; i++) {
+            float s = stream[i];
+            stream[i] = combs[0]->process(s) + combs[1]->process(s) + combs[2]->process(s) + combs[3]->process(s);
         }
     }
 };
@@ -387,12 +519,14 @@ AllPassDelay allPassDelay{ -0.5, 22050 };
 Delay delay{ 0.5, 0.5 };
 Reverb reverb;
 CombinedReverb combinedReverb;
-
+SchroderReverb schroderReverb;
 ExplicitDelay ed1{ 229, 0.5 };
 ExplicitDelay ed2{ 1069, 0.5 };
 ExplicitDelay ed3{ 3181, 0.5 };
 ExplicitDelay ed4{ 6053, 0.5 };
 ExplicitDelay ed5{ 7919, 0.5 };
+LBCF lcbf(.84, .2, 1557);
+FreeVerb freeVerb;
 LFO lfo{ 0.01, 0.5 };
 
 int mode = 0;
@@ -409,10 +543,12 @@ void fillAudio(void *unused, Uint8 *stream, int len) {
     //combinedReverb.process(FLOATSTREAM);
     //delay.process(FLOATSTREAM);
     if (mode == 0) {
-        reverb.process(FLOATSTREAM); // delay.process(FLOATSTREAM);
+        freeVerb.process(FLOATSTREAM);
         basicFilter.process(FLOATSTREAM);
-    } else if (mode == 1)
-        allPassDelay.process(FLOATSTREAM);
+    } else if (mode == 1) {
+        schroderReverb.process(FLOATSTREAM);
+        basicFilter.process(FLOATSTREAM);
+    }
     renderState((float*)stream, len);
 }
 
@@ -583,24 +719,35 @@ int main(int argc, char *argv[]) {
         static int x, y;
         static char krtString[12];
         gui.start(x, y, 300, 200, "params");
+        int slidery = 0;
+        int step = 20;
+        static float room = 0.82f;
+        static float damp = 0.2f;
         switch (mode) {
         case 0:
-            gui.slider(reverb.krt, 0, 0, 150, 20);
-            sprintf_s(krtString, "%.2f krt", reverb.krt);
-            gui.label(150, 10, krtString);
-            gui.slider(basicFilter.k, 0, 25, 100, 20);
-            gui.label(150, 35, "filter");
-            if (gui.button(0, 50, 100, 20, "panic")) {
-                memset(reverb.accum, 0, sizeof(float) * 1024);
-                for (int i = 0; i < 8; i++) {
-                    memset(reverb.delays[i].buffer, 0, sizeof(float) * 88211);
-                }
+            gui.slider(basicFilter.k, 0, y, 100, 20);
+            gui.label(120, 10, "filter");
+            slidery += step;
+
+            if (gui.slider(room, 0, slidery, 100, 20)) {
+                freeVerb.set(room, damp);
+            }
+            gui.label(120, slidery+10, "room");
+            slidery += step;
+
+            if (gui.slider(damp, 0, slidery, 100, 20)) {
+                freeVerb.set(room, damp);
+            }
+            gui.label(120, slidery+10, "damp");
+
+            if (gui.button(0, 150, 50, 20, "panic")) {
+                freeVerb.panic();
             }
         }
         gui.end();
         gui.render();
         SDL_GL_SwapWindow(window);
-        SDL_Delay(1000 / 120);
+        SDL_Delay(100);
     }
 
 exit:
