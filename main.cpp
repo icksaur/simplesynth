@@ -19,16 +19,20 @@ int gate;
 const float envelopePopThreshold = 0.003;
 const int delayBufferSize = 88211; // prime larger than 2 * 44100
 
+const int rez = 512;
+
 SDL_Renderer * renderer;
-int graph[512];
+int graph[rez];
 bool graphDirty = false;
-void renderState(float * samples, int count, float min = -1.0f, float max = 1.0f) {
+void renderState(float * samples, int count) {
+    const float min = -1.0f;
+    const float max = 1.0f;
+    const float range = max - min;
     if (!graphDirty) return;
     graphDirty = false;
-    int width = count < 512 ? count : 512;
-    float range = max - min;
+    int width = count < rez ? count : rez;
     for (int i = 0; i < width; i++) {
-        graph[i] = 512 - (samples[i] - min) / range * 512;
+        graph[i] = rez - (samples[i] - min) / range * rez;
     }
 }
 
@@ -51,56 +55,59 @@ struct Envelope {
         t = 0;
     }
     void process(float * samples, int count, int gate) {
-        float amp1;
-        for (int i=0;i<count;i++) {
-            if (_gate && !gate) {
-                if (state < 3) {
-                    state = 3; t = 0;
-                }
-                _gate = gate;
-            }
-            switch(state) {
-            case 0:
-                if(a && t < 1) {
-                    amp1 = t;
-                    t += 1 / a / (float)frequency;
-                    break;
-                }
-                t = 0;
-                state++;
-            case 1:
-                if (d && state < 2) {
-                    amp1 = (1 - t * (1 - s));
-                    t += 1 / d / (float)frequency;
-                    if (t >= 1) {
-                        state++;
-                        t = 0;
-                    }
-                    break;
-                }
-                t = 0;
-                state++;
-            case 2:
-                amp1 = s;
-                break;
-            case 3:
-                if (r && t < 1) {
-                    amp1 = s * (1-t);
-                    t += 1 / r / frequency;
-                    break;
-                }
-                t = 0;
-                state = 4;
-            case 4:
-                amp1 = 0;
-            }
-            float ampDif = amp1 - amp;
-            if (abs(ampDif) > envelopePopThreshold) {
-                amp1 = amp + copysign(envelopePopThreshold, ampDif);
-            }
-            samples[i] *= amp1;
-            amp = amp1;
+        for (int i = 0; i < count; i++) {
+            process(samples[i]);
         }
+    }
+    void process(float & sample) {
+        float amp1;
+        if (_gate && !gate) {
+            if (state < 3) {
+                state = 3; t = 0;
+            }
+            _gate = gate;
+        }
+        switch(state) {
+        case 0:
+            if(a && t < 1) {
+                amp1 = t;
+                t += 1 / a / (float)frequency;
+                break;
+            }
+            t = 0;
+            state++;
+        case 1:
+            if (d && state < 2) {
+                amp1 = (1 - t * (1 - s));
+                t += 1 / d / (float)frequency;
+                if (t >= 1) {
+                    state++;
+                    t = 0;
+                }
+                break;
+            }
+            t = 0;
+            state++;
+        case 2:
+            amp1 = s;
+            break;
+        case 3:
+            if (r && t < 1) {
+                amp1 = s * (1-t);
+                t += 1 / r / frequency;
+                break;
+            }
+            t = 0;
+            state = 4;
+        case 4:
+            amp1 = 0;
+        }
+        float ampDif = amp1 - amp;
+        if (abs(ampDif) > envelopePopThreshold) {
+            amp1 = amp + copysign(envelopePopThreshold, ampDif);
+        }
+        sample *= amp1;
+        amp = amp1;
     }
 };
 
@@ -147,15 +154,18 @@ struct ModulatingSignal {
     float noise;
     float t;
     void process(float * samples, int count) {
-        for (int i=0; i<count; i++) {
-            float h = sin(2.0 * M_PI * t) * sine;
-            h += (2.0 * t - 1.0) * saw;
-            h += (t < 0.5 ? -1 : 1) * square;
-            h += ((float)rand() / (float)RAND_MAX * 2.0 - 1.0) * noise;
-            t += samples[i] / frequency;
-            samples[i] = h;
-            t = fmod(t, 1.0f);
+        for (int i = 0; i < count; i++) {
+            process(samples[i]);
         }
+    }
+    void process(float & sample) {
+        float h = sin(2.0 * M_PI * t) * sine;
+        h += (2.0 * t - 1.0) * saw;
+        h += (t < 0.5 ? -1 : 1) * square;
+        h += ((float)rand() / (float)RAND_MAX * 2.0 - 1.0) * noise;
+        t += sample / frequency;
+        sample = h;
+        t = fmod(t, 1.0f);
     }
 };
 
@@ -171,18 +181,21 @@ struct FixedSignal {
     int cursor;
     void process(float * samples, int count) {
         for (int i = 0; i < count; i++) {
-            if (cursor >= wavelength - 1) {
-                wavelength = frequency / samples[i];
-                cursor = 0;
-            }
-            float t = (float)cursor / (float)(wavelength - 1);
-            float h = sin(2.0 * M_PI * t) * sine;
-            h += (2.0 * t - 1.0) * tri;
-            h += (t < 0.5 ? -1 : 1) * square;
-            h += ((float)rand() / (float)RAND_MAX * 2.0 - 1.0) * noise;
-            samples[i] = h;
-            cursor++;
+            process(samples[i]);
         }
+    }
+    void process(float & sample) {
+        if (cursor >= wavelength - 1) {
+            wavelength = frequency / sample;
+            cursor = 0;
+        }
+        float t = (float)cursor / (float)(wavelength - 1);
+        float h = sin(2.0 * M_PI * t) * sine;
+        h += (2.0 * t - 1.0) * tri;
+        h += (t < 0.5 ? -1 : 1) * square;
+        h += ((float)rand() / (float)RAND_MAX * 2.0 - 1.0) * noise;
+        sample = h;
+        cursor++;
     }
 };
 
@@ -192,10 +205,13 @@ struct LFO {
     float t;
     void process(float * samples, int count) {
         for (int i = 0; i < count; i++) {
-            samples[i] += sin(2.0 * M_PI * t) * amplitude;
-            t += 1 / (float)frequency / period;
-            wrap(t);
+            process(samples[i]);
         }
+    }
+    void process(float & sample) {
+        sample += sin(2.0 * M_PI * t) * amplitude;
+        t += 1 / (float)frequency / period;
+        wrap(t);
     }
 };
 
@@ -207,6 +223,12 @@ struct CombFilter {
     int delay;
     int read;
     float buffer[delayBufferSize];
+    void process(float * samples, int count) {
+        delay = delay > (frequency - 1) ? (frequency - 1) : delay;
+        for (int i = 0; i < count; i++) {
+            samples[i] = process(samples[i]);
+        }
+    }
     float process(float sample) {
         buffer[(read + delay) % delayBufferSize] = sample * decay;
         sample += buffer[read];
@@ -214,13 +236,6 @@ struct CombFilter {
         read %= delayBufferSize;
         return sample;
     }
-    void process(float * samples, int count) {
-        delay = delay > (frequency - 1) ? (frequency - 1) : delay;
-        for (int i = 0; i < count; i++) {
-            samples[i] = process(samples[i]);
-        }
-    }
-
 };
 
 struct BasicFilter {
@@ -228,9 +243,12 @@ struct BasicFilter {
     float r;
     void process(float * stream, int count) {
         for (int i = 0; i < count; i++) {
-            stream[i] = (stream[i] - r) * k + r;
-            r = stream[i];
+            process(stream[i]);
         }
+    }
+    void process(float & sample) {
+        sample = (sample - r) * k + r;
+        r = sample;
     }
 };
 
@@ -261,11 +279,14 @@ struct AllPassDelay {
     int read;
     void process(float * stream, int count) {
         for (int i = 0; i < count; i++) {
-            float r1 = buffer[read] + stream[i] * k; // peek in delay
-            stream[i] = r1 * -k + buffer[read];
-            buffer[(read + delay) % frequency] = r1 * 0.5;
-            ++read %= frequency;
+            process(stream[i]);
         }
+    }
+    void process(float & sample) {
+        float r1 = buffer[read] + sample * k; // peek in delay
+        sample = r1 * -k + buffer[read];
+        buffer[(read + delay) % frequency] = r1 * 0.5;
+        ++read %= frequency;
     }
 };
 
@@ -279,6 +300,11 @@ struct AllPassFilter {
             stream[i] = r1 * -k + r;
             r = r1;
         }
+    }
+    void process(float & sample) {
+        float r1 = sample + r * k;
+        sample = r1 * -k + r;
+        r = r1;
     }
 };
 
@@ -416,7 +442,6 @@ int mode = 0;
 void fillAudio(void *unused, Uint8 *stream, int len) {
     noteGen.generate(FLOATSTREAM);
     lfo.process(FLOATSTREAM);
-    //renderState((float*)stream, len / 4, noteGen.note-0.1, noteGen.note+0.1);
     noteFreq.process(FLOATSTREAM);
     modsig.process(FLOATSTREAM);
     env.process(FLOATSTREAM, gate);
@@ -475,7 +500,7 @@ void prepVAO() {
 
 int main(int argc, char *argv[]) {
     srand(time(0));
-    int xrez = 512, yrez = 512;
+    int xrez = rez, yrez = rez;
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO);
     SDL_Window * window = SDL_CreateWindow("test", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, xrez, xrez, SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI);
     SDL_GLContext context = SDL_GL_CreateContext(window);
@@ -519,11 +544,11 @@ int main(int argc, char *argv[]) {
     float vertices[] = { -w,-w, 0,0, -w,w, 0,1, w,w, 1,1, w,-w, 1,0 };
     vao.vertexData(vertices, sizeof(vertices));
 
-    unsigned graphBytesSize = 512 * 512 * 4;
+    unsigned graphBytesSize = rez * rez * 4;
     char * graphBytes = new char[graphBytesSize];
     unsigned * graphTexels = (unsigned*)graphBytes;
     memset(graphBytes, 0, graphBytesSize);
-    ArrayTexture graphTexture(512, 1, graphBytes, graphBytesSize);
+    ArrayTexture graphTexture(rez, 1, graphBytes, graphBytesSize);
 
     GUI gui;
 
@@ -576,21 +601,23 @@ int main(int argc, char *argv[]) {
             case SDL_QUIT:
             running = false;
             break;
-            case SDL_MOUSEMOTION: gui.pushMouseMotion(event.motion.x, 512 - event.motion.y); break;
-            case SDL_MOUSEBUTTONDOWN: if (event.button.button == SDL_BUTTON_LEFT) gui.pushMouseDown(0, event.button.x, 512-event.button.y); break;
-            case SDL_MOUSEBUTTONUP: if (event.button.button == SDL_BUTTON_LEFT) gui.pushMouseUp(0, event.button.x, 512-event.button.y); break;
+            case SDL_MOUSEMOTION: gui.pushMouseMotion(event.motion.x, rez - event.motion.y); break;
+            case SDL_MOUSEBUTTONDOWN: if (event.button.button == SDL_BUTTON_LEFT) gui.pushMouseDown(0, event.button.x, rez-event.button.y); break;
+            case SDL_MOUSEBUTTONUP: if (event.button.button == SDL_BUTTON_LEFT) gui.pushMouseUp(0, event.button.x, rez-event.button.y); break;
             }
         }
 
-        memset(graphTexels, 0, sizeof(unsigned) * 512 * 512);
-        for (int i = 0; i < 512; i++) {
-            for (int j = 0; j < 512; j++) {
-                if (graph[i] < j) graphTexels[512 * j + i] = 0xFFFFFFFF;
+        memset(graphTexels, 0, sizeof(unsigned) * rez * rez);
+        for (int i = 0; i < rez; i++) {
+            for (int j = 0; j < rez; j++) {
+                if (graph[i] < j) {
+                    graphTexels[rez * j + i] = 0xFFFFFFFF;
+                }
             }
         }
         glActiveTexture(GL_TEXTURE0 + 0);
         graphTexture.bind();
-        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, 512, 512, 1, GL_RGB8, GL_UNSIGNED_BYTE, graphTexels);
+        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, rez, rez, 1, GL_RGBA, GL_UNSIGNED_BYTE, graphTexels);
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         program.use();
