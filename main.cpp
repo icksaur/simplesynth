@@ -56,10 +56,10 @@ struct Envelope {
     }
     void process(float * samples, int count, int gate) {
         for (int i = 0; i < count; i++) {
-            process(samples[i]);
+            process(samples[i], gate);
         }
     }
-    void process(float & sample) {
+    void process(float & sample, int gate) {
         float amp1;
         if (_gate && !gate) {
             if (state < 3) {
@@ -117,18 +117,18 @@ struct Note {
     float note0;
     float t;
     void generate(float * samples, int count) {
-        if (note != note0 && t >= 1) {
-            t = 0;
-        }
         for (int i = 0; i < count; i++) {
-            float n = (note * t + note0 * (1 - t));
-            t += 1 / (float)frequency / glide;
-            if (t >= 1) {
-                t = 1;
-                note0 = note;
-            }
-            samples[i] = n;
+            generate(samples[i]);
         }
+    }
+    void generate(float & sample) {
+        float n = (note * t + note0 * (1 - t));
+        t += 1 / (float)frequency / glide;
+        if (t >= 1) {
+            t = 1;
+            note0 = note;
+        }
+        sample = n;
     }
 };
 
@@ -138,9 +138,12 @@ struct Frequency {
     float t;
     void process(float * samples, int count) {
         for (int i = 0; i < count; i++) {
-            samples[i] = noteFreqency(samples[i]);
-            t += 1 / (float)samples[i];
+            process(samples[i]);
         }
+    }
+    void process(float & sample) {
+        sample = noteFreqency(sample);
+        t += 1 / sample;
         wrap(t);
     }
 };
@@ -347,24 +350,24 @@ struct LowpassFeedbackCombFilter {
 typedef LowpassFeedbackCombFilter LBCF;
 
 const float defaultRoom = 0.84f;
-const float allPassGain = 0.7f;
+const float allPassGain = 0.618f; // reciporical of golden ratio
 
 struct FreeVerb {
     LBCF * combs[8];
     AllPassDelay * allpass[4];
     FreeVerb() {
-        combs[0] = new LBCF(defaultRoom, .2, 1557);
-        combs[1] = new LBCF(defaultRoom, .2, 1617);
+        combs[0] = new LBCF(defaultRoom, .2, 1617);
+        combs[1] = new LBCF(defaultRoom, .2, 1557);
         combs[2] = new LBCF(defaultRoom, .2, 1491);
-        combs[3] = new LBCF(defaultRoom, .2, 1422);
-        combs[4] = new LBCF(defaultRoom, .2, 1277);
+        combs[3] = new LBCF(defaultRoom, .2, 1277);
+        combs[4] = new LBCF(defaultRoom, .2, 1422);
         combs[5] = new LBCF(defaultRoom, .2, 1356);
         combs[6] = new LBCF(defaultRoom, .2, 1188);
         combs[7] = new LBCF(defaultRoom, .2, 1116);
-        allpass[0] = new AllPassDelay{allPassGain, 225};
         allpass[1] = new AllPassDelay{allPassGain, 556};
         allpass[2] = new AllPassDelay{allPassGain, 441};
         allpass[3] = new AllPassDelay{allPassGain, 341};
+        allpass[0] = new AllPassDelay{allPassGain, 225};
     }
     void set(float room, float damp) {
         for (int i = 0; i < 8; i++) {
@@ -379,14 +382,17 @@ struct FreeVerb {
     }
     void process(float * stream, int count) {
         for (int i = 0; i < count; i++) {
-            float out = 0;
-            for (int j = 0; j < 8; j++) {
-                out += combs[j]->process(stream[i]);
-            }
-            stream[i] = out;
+            process(stream[i]);
         }
+    }
+    void process(float & sample) {
+        float out = 0;
+        for (int j = 0; j < 8; j++) {
+            out += combs[j]->process(sample);
+        }
+        sample = out;
         for (int i = 0; i < 4; i++) {
-            allpass[i]->process(stream, count);
+            allpass[i]->process(sample);
         }
     }
 };
@@ -401,18 +407,21 @@ struct Delay {
 
     void process(float * samples, int count) {
         for (int i = 0; i < count; i++) {
-            float read = (float)write - (float)frequency * delay;
-            if (read < 0) {
-                read = (float)delayBufferSize + read;
-            }
-            float t = fmod(read, 1);
-            int read0 = (int)read;
-            int read1 = ((int)read+1) % delayBufferSize;
-            samples[i] += buffer[read0] * t + buffer[read1] * (1 - t);
-            buffer[write] = samples[i] * decay;
-            write++;
-            write %= delayBufferSize;
+            process(samples[i]);
         }
+    }
+    void process(float & sample) {
+        float read = (float)write - (float)frequency * delay;
+        if (read < 0) {
+            read = (float)delayBufferSize + read;
+        }
+        float t = fmod(read, 1);
+        int read0 = (int)read;
+        int read1 = ((int)read+1) % delayBufferSize;
+        sample += buffer[read0] * t + buffer[read1] * (1 - t);
+        buffer[write] = sample * decay;
+        write++;
+        write %= delayBufferSize;
     }
 };
 
@@ -439,22 +448,46 @@ int mode = 0;
 
 #define FLOATSTREAM (float*)stream, len / 4
 
+bool perSample = false;
+
 void fillAudio(void *unused, Uint8 *stream, int len) {
-    noteGen.generate(FLOATSTREAM);
-    lfo.process(FLOATSTREAM);
-    noteFreq.process(FLOATSTREAM);
-    modsig.process(FLOATSTREAM);
-    env.process(FLOATSTREAM, gate);
-    //combinedReverb.process(FLOATSTREAM);
-    //delay.process(FLOATSTREAM);
-    if (mode == 0) {
-        freeVerb.process(FLOATSTREAM);
-    } else if (mode == 1) {
-        allPassDelay.process(FLOATSTREAM);
+    float * floatStream = (float*)stream;
+    if (perSample) {
+        for (unsigned i = 0; i < len/sizeof(*floatStream); i++) {
+            float & sample = floatStream[i];
+            noteGen.generate(sample);
+            lfo.process(sample);
+            noteFreq.process(sample);
+            modsig.process(sample);
+            env.process(sample, gate);
+            if (mode == 0) {
+                freeVerb.process(sample);
+            }
+            else if (mode == 1) {
+                allPassDelay.process(sample);
+            }
+            else {
+                delay.process(sample);
+            }
+            basicFilter.process(sample);
+        }
     } else {
-        delay.process(FLOATSTREAM);
+        noteGen.generate(FLOATSTREAM);
+        lfo.process(FLOATSTREAM);
+        noteFreq.process(FLOATSTREAM);
+        modsig.process(FLOATSTREAM);
+        env.process(FLOATSTREAM, gate);
+        if (mode == 0) {
+            freeVerb.process(FLOATSTREAM);
+        }
+        else if (mode == 1) {
+            allPassDelay.process(FLOATSTREAM);
+        }
+        else {
+            delay.process(FLOATSTREAM);
+        }
+        basicFilter.process(FLOATSTREAM);
     }
-    basicFilter.process(FLOATSTREAM);
     renderState((float*)stream, len);
 }
 
@@ -485,18 +518,6 @@ void main() {
 }
 #endif
 )";
-
-void prepVAO() {
-    ShaderProgram program(fullScreenTexturedQuadSource);
-
-    VAOBuilder builder(1);
-    builder.addFloats(0, 0, 2).addFloats(0, 1, 2);
-    VAO vao(program, builder);
-
-    const float w = 0.5f;
-    float vertices[] = { -w,-w, 0,0, -w,w, 0,1, w,w, 1,1, w,-w, 1,0 };
-    vao.vertexData(vertices, sizeof(vertices));
-}
 
 int main(int argc, char *argv[]) {
     srand(time(0));
@@ -627,26 +648,28 @@ int main(int argc, char *argv[]) {
         static int x, y;
         static char krtString[12];
         gui.start(x, y, 300, 200, "params");
-        int slidery = 0;
+        int elementY = 0;
         int step = 20;
         static float room = 0.82f;
         static float damp = 0.2f;
         switch (mode) {
         case 0:
-            gui.slider(basicFilter.k, 0, y, 100, 20);
-            gui.label(120, 10, "filter");
-            slidery += step;
+            gui.checkbox(0, elementY, 20, 20, perSample);
+            elementY += step;
+            gui.slider(basicFilter.k, 0, elementY, 100, 20);
+            gui.label(120, elementY+10, "filter");
+            elementY += step;
 
-            if (gui.slider(room, 0, slidery, 100, 20)) {
+            if (gui.slider(room, 0, elementY, 100, 20)) {
                 freeVerb.set(room, damp);
             }
-            gui.label(120, slidery+10, "room");
-            slidery += step;
+            gui.label(120, elementY+10, "room");
+            elementY += step;
 
-            if (gui.slider(damp, 0, slidery, 100, 20)) {
+            if (gui.slider(damp, 0, elementY, 100, 20)) {
                 freeVerb.set(room, damp);
             }
-            gui.label(120, slidery+10, "damp");
+            gui.label(120, elementY+10, "damp");
 
             if (gui.button(0, 150, 50, 20, "panic")) {
                 freeVerb.panic();
@@ -659,7 +682,6 @@ int main(int argc, char *argv[]) {
         SDL_Delay(1000/60);
     }
 
-exit:
     SDL_GL_DeleteContext(context);
     SDL_DestroyWindow(window);
     return 0;

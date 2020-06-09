@@ -211,9 +211,7 @@ void buildShaderProgram(unsigned & shaderProgram, const char * source, unsigned 
     }
 }
 
-//SETTING(MAXVBOS, 2);
 const int MAXVBOS = 2;
-
 
 VAOBuilder::VAOBuilder(unsigned short vboCount) : divisor(0), vboCount(vboCount) {
     if (vboCount == 0) throw std::runtime_error("VAO requires at least 1 VBO");
