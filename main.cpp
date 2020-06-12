@@ -43,6 +43,8 @@ float noteFreqency(int a, int halfSteps) {
     return noteFreqency((float)a + (float)halfSteps / 12.0f);
 }
 
+struct StereoSample { float l, r; };
+
 struct Envelope {
     float a, d, s, r;
     float t;
@@ -53,11 +55,6 @@ struct Envelope {
         _gate = 1;
         state = 0; 
         t = 0;
-    }
-    void process(float * samples, int count, int gate) {
-        for (int i = 0; i < count; i++) {
-            process(samples[i], gate);
-        }
     }
     void process(float & sample, int gate) {
         float amp1;
@@ -133,21 +130,16 @@ struct Note {
 };
 
 #define wrap(t) t = t > 1.0f ? 0.0f : t
+//#define wrap(t) t = t > 1.0f ? 1-1.0f : t
 
 struct Frequency {
     float t;
-    void process(float * samples, int count) {
-        for (int i = 0; i < count; i++) {
-            process(samples[i]);
-        }
-    }
     void process(float & sample) {
         sample = noteFreqency(sample);
         t += 1 / sample;
         wrap(t);
     }
 };
-
 
 // Generates waveforms which will bend each sample by sample frequency.
 struct ModulatingSignal {
@@ -156,11 +148,6 @@ struct ModulatingSignal {
     float square;
     float noise;
     float t;
-    void process(float * samples, int count) {
-        for (int i = 0; i < count; i++) {
-            process(samples[i]);
-        }
-    }
     void process(float & sample) {
         float h = sin(2.0 * M_PI * t) * sine;
         h += (2.0 * t - 1.0) * saw;
@@ -168,7 +155,7 @@ struct ModulatingSignal {
         h += ((float)rand() / (float)RAND_MAX * 2.0 - 1.0) * noise;
         t += sample / frequency;
         sample = h;
-        t = fmod(t, 1.0f);
+        wrap(t);
     }
 };
 
@@ -182,11 +169,6 @@ struct FixedSignal {
     float noise;
     int wavelength;
     int cursor;
-    void process(float * samples, int count) {
-        for (int i = 0; i < count; i++) {
-            process(samples[i]);
-        }
-    }
     void process(float & sample) {
         if (cursor >= wavelength - 1) {
             wavelength = frequency / sample;
@@ -206,11 +188,6 @@ struct LFO {
     float amplitude;
     float period;
     float t;
-    void process(float * samples, int count) {
-        for (int i = 0; i < count; i++) {
-            process(samples[i]);
-        }
-    }
     void process(float & sample) {
         sample += sin(2.0 * M_PI * t) * amplitude;
         t += 1 / (float)frequency / period;
@@ -226,12 +203,6 @@ struct CombFilter {
     int delay;
     int read;
     float buffer[delayBufferSize];
-    void process(float * samples, int count) {
-        delay = delay > (frequency - 1) ? (frequency - 1) : delay;
-        for (int i = 0; i < count; i++) {
-            samples[i] = process(samples[i]);
-        }
-    }
     float process(float sample) {
         buffer[(read + delay) % delayBufferSize] = sample * decay;
         sample += buffer[read];
@@ -244,11 +215,6 @@ struct CombFilter {
 struct BasicFilter {
     float k;
     float r;
-    void process(float * stream, int count) {
-        for (int i = 0; i < count; i++) {
-            process(stream[i]);
-        }
-    }
     void process(float & sample) {
         sample = (sample - r) * k + r;
         r = sample;
@@ -267,12 +233,6 @@ struct ExplicitDelay {
         read++;
         read %= delayBufferSize;
     }
-    void process(float * samples, int count) {
-        delay = delay > (frequency - 1) ? (frequency - 1) : delay;
-        for (int i = 0; i < count; i++) {
-            process(samples[i]);
-        }
-    }
 };
 
 struct AllPassDelay {
@@ -280,11 +240,6 @@ struct AllPassDelay {
     int delay;
     float buffer[frequency];
     int read;
-    void process(float * stream, int count) {
-        for (int i = 0; i < count; i++) {
-            process(stream[i]);
-        }
-    }
     void process(float & sample) {
         float r1 = buffer[read] + sample * k; // peek in delay
         sample = r1 * -k + buffer[read];
@@ -297,13 +252,6 @@ struct AllPassDelay {
 struct AllPassFilter {
     float k;
     float r;
-    void process(float * stream, int count) {
-        for (int i = 0; i < count; i++) {
-            float r1 = stream[i] + r * k;
-            stream[i] = r1 * -k + r;
-            r = r1;
-        }
-    }
     void process(float & sample) {
         float r1 = sample + r * k;
         sample = r1 * -k + r;
@@ -332,11 +280,6 @@ struct LowpassFeedbackCombFilter {
     ~LowpassFeedbackCombFilter() {
         delete[] buffer;
     }
-    void process(float * stream, int count) {
-        for (int i = 0; i < count; i++) {
-            stream[i] = process(stream[i]);
-        }
-    }
     float process(float x) {
         float y = buffer[read]; // delay line
         onepole = (1.0f - damp) / (1.0f - damp * onepole);
@@ -352,10 +295,10 @@ typedef LowpassFeedbackCombFilter LBCF;
 const float defaultRoom = 0.84f;
 const float allPassGain = 0.618f; // reciporical of golden ratio
 
-struct FreeVerb {
+struct MonoReverb {
     LBCF * combs[8];
     AllPassDelay * allpass[4];
-    FreeVerb() {
+    MonoReverb() {
         combs[0] = new LBCF(defaultRoom, .2, 1617);
         combs[1] = new LBCF(defaultRoom, .2, 1557);
         combs[2] = new LBCF(defaultRoom, .2, 1491);
@@ -372,18 +315,13 @@ struct FreeVerb {
     void set(float room, float damp) {
         for (int i = 0; i < 8; i++) {
             combs[i]->room = room;
-            combs[i]->damp = damp;
+            if (damp < 1.0f) combs[i]->damp = damp;
         }
     }
     void panic() {
         for (int i = 0; i < 8; i++) memset(combs[i]->buffer, 0, sizeof(float)*combSize);
         for (int i = 0; i < 8; i++) combs[i]->onepole = 0.0f;
         for (int i = 0; i < 4; i++) memset(allpass[i]->buffer, 0, sizeof(float)*frequency);
-    }
-    void process(float * stream, int count) {
-        for (int i = 0; i < count; i++) {
-            process(stream[i]);
-        }
     }
     void process(float & sample) {
         float out = 0;
@@ -397,6 +335,28 @@ struct FreeVerb {
     }
 };
 
+
+struct StereoReverb {
+    MonoReverb l;
+    MonoReverb r;
+    float dry;
+    StereoReverb() {
+        dry = 0.0f;
+        for (int i = 0; i < 8; i++)
+            r.combs[i]->n += 23;
+        for (int i = 0; i < 4; i++) {
+            r.allpass[i]->delay += 23;
+        }
+    }
+    void process(float sample, StereoSample & stereoSample) {
+        stereoSample.l = stereoSample.r = sample;
+        r.process(stereoSample.r);
+        stereoSample.r += dry * sample;
+        l.process(stereoSample.l);
+        stereoSample.l += dry * sample;
+    }
+};
+
 #define nwrap(i) i < 0 ? (float)delayBufferSize - i : i
 
 struct Delay {
@@ -405,11 +365,6 @@ struct Delay {
     int write;
     float buffer[delayBufferSize];
 
-    void process(float * samples, int count) {
-        for (int i = 0; i < count; i++) {
-            process(samples[i]);
-        }
-    }
     void process(float & sample) {
         float read = (float)write - (float)frequency * delay;
         if (read < 0) {
@@ -422,6 +377,16 @@ struct Delay {
         buffer[write] = sample * decay;
         write++;
         write %= delayBufferSize;
+    }
+};
+
+struct Fader {
+    float balance;
+    void process(float sample, StereoSample & stereoSample) {
+        float left = 0.5f + (balance * 0.5f);
+        float right = 0.5f - (balance * 0.5f);
+        stereoSample.l = left * sample;
+        stereoSample.r = right * sample;
     }
 };
 
@@ -441,52 +406,37 @@ ExplicitDelay ed2{ 1069, 0.5 };
 ExplicitDelay ed3{ 3181, 0.5 };
 ExplicitDelay ed4{ 6053, 0.5 };
 ExplicitDelay ed5{ 7919, 0.5 };
-FreeVerb freeVerb;
+StereoReverb stereoReverb;
 LFO lfo{ 0.01, 0.5 };
+Fader fader;
 
 int mode = 0;
 
-#define FLOATSTREAM (float*)stream, len / 4
-
-bool perSample = false;
+float monoSamples[1024];
+#define FLOATSTREAM (float*)monoSamples, len / 4
 
 void fillAudio(void *unused, Uint8 *stream, int len) {
     float * floatStream = (float*)stream;
-    if (perSample) {
-        for (unsigned i = 0; i < len/sizeof(*floatStream); i++) {
-            float & sample = floatStream[i];
-            noteGen.generate(sample);
-            lfo.process(sample);
-            noteFreq.process(sample);
-            modsig.process(sample);
-            env.process(sample, gate);
-            if (mode == 0) {
-                freeVerb.process(sample);
-            }
-            else if (mode == 1) {
-                allPassDelay.process(sample);
-            }
-            else {
-                delay.process(sample);
-            }
-            basicFilter.process(sample);
-        }
-    } else {
-        noteGen.generate(FLOATSTREAM);
-        lfo.process(FLOATSTREAM);
-        noteFreq.process(FLOATSTREAM);
-        modsig.process(FLOATSTREAM);
-        env.process(FLOATSTREAM, gate);
+    StereoSample * stereoSamples = (StereoSample*)stream;
+    for (unsigned i = 0; i < len/sizeof(*stereoSamples); i++) {
+        float sample;
+        noteGen.generate(sample);
+        //lfo.process(sample);
+        noteFreq.process(sample);
+        modsig.process(sample);
+        env.process(sample, gate);
         if (mode == 0) {
-            freeVerb.process(FLOATSTREAM);
+            basicFilter.process(sample);
+            fader.process(sample, stereoSamples[i]);
+        } else if (mode == 1) {
+            stereoReverb.process(sample, stereoSamples[i]);
+            basicFilter.process(stereoSamples[i].r);
+            basicFilter.process(stereoSamples[i].l);
+        } else {
+            delay.process(sample);
+            basicFilter.process(sample);
+            fader.process(sample, stereoSamples[i]);
         }
-        else if (mode == 1) {
-            allPassDelay.process(FLOATSTREAM);
-        }
-        else {
-            delay.process(FLOATSTREAM);
-        }
-        basicFilter.process(FLOATSTREAM);
     }
     renderState((float*)stream, len);
 }
@@ -495,7 +445,6 @@ void noteOn(SDL_Event & e, int note) {
     if (e.key.repeat) return;
     gate++;
     noteGen.note = (float)note / 12.0f;
-
     env.trigger();
 }
 
@@ -544,7 +493,7 @@ int main(int argc, char *argv[]) {
     desired.samples = 1024;
     desired.callback = fillAudio;
     desired.userdata = NULL;
-    desired.channels = 1;
+    desired.channels = 2;
     if ( SDL_OpenAudio(&desired, &obtained) < 0 ) {
         fprintf(stderr, "AudioMixer, Unable to open audio: %s\n", SDL_GetError());
         return 1;
@@ -584,21 +533,21 @@ int main(int argc, char *argv[]) {
                 switch (event.key.keysym.sym) {
                 case SDLK_ESCAPE: running = false; break;
                 case SDLK_a: noteOn(event, octave); break;
-                case SDLK_w: noteOn(event, octave+1); break;
-                case SDLK_s: noteOn(event, octave+2); break;
-                case SDLK_e: noteOn(event, octave+3); break;
-                case SDLK_d: noteOn(event, octave+4); break;
-                case SDLK_f: noteOn(event, octave+5); break;
-                case SDLK_t: noteOn(event, octave+6); break;
-                case SDLK_g: noteOn(event, octave+7); break;
-                case SDLK_y: noteOn(event, octave+8); break;
-                case SDLK_h: noteOn(event, octave+9); break;
-                case SDLK_u: noteOn(event, octave+10); break;
-                case SDLK_j: noteOn(event, octave+11); break;
-                case SDLK_k: noteOn(event, octave+12); break;
+                case SDLK_w: noteOn(event, octave + 1); break;
+                case SDLK_s: noteOn(event, octave + 2); break;
+                case SDLK_e: noteOn(event, octave + 3); break;
+                case SDLK_d: noteOn(event, octave + 4); break;
+                case SDLK_f: noteOn(event, octave + 5); break;
+                case SDLK_t: noteOn(event, octave + 6); break;
+                case SDLK_g: noteOn(event, octave + 7); break;
+                case SDLK_y: noteOn(event, octave + 8); break;
+                case SDLK_h: noteOn(event, octave + 9); break;
+                case SDLK_u: noteOn(event, octave + 10); break;
+                case SDLK_j: noteOn(event, octave + 11); break;
+                case SDLK_k: noteOn(event, octave + 12); break;
                 case SDLK_F4: if (event.key.keysym.mod & KMOD_ALT) running = false; break;
-                case SDLK_PAGEDOWN: octave = octave ? octave-12 : octave; break;
-                case SDLK_PAGEUP: octave = octave < (12*7) ? octave+12 : octave; break;
+                case SDLK_PAGEDOWN: octave = octave ? octave - 12 : octave; break;
+                case SDLK_PAGEUP: octave = octave < (12 * 7) ? octave + 12 : octave; break;
                 case SDLK_SPACE: ++mode %= 3; break;
                 }
                 break;
@@ -620,11 +569,11 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             case SDL_QUIT:
-            running = false;
-            break;
+                running = false;
+                break;
             case SDL_MOUSEMOTION: gui.pushMouseMotion(event.motion.x, rez - event.motion.y); break;
-            case SDL_MOUSEBUTTONDOWN: if (event.button.button == SDL_BUTTON_LEFT) gui.pushMouseDown(0, event.button.x, rez-event.button.y); break;
-            case SDL_MOUSEBUTTONUP: if (event.button.button == SDL_BUTTON_LEFT) gui.pushMouseUp(0, event.button.x, rez-event.button.y); break;
+            case SDL_MOUSEBUTTONDOWN: if (event.button.button == SDL_BUTTON_LEFT) gui.pushMouseDown(0, event.button.x, rez - event.button.y); break;
+            case SDL_MOUSEBUTTONUP: if (event.button.button == SDL_BUTTON_LEFT) gui.pushMouseUp(0, event.button.x, rez - event.button.y); break;
             }
         }
 
@@ -652,28 +601,51 @@ int main(int argc, char *argv[]) {
         int step = 20;
         static float room = 0.82f;
         static float damp = 0.2f;
+        static float fade = 0.5f;
+        static float dry = 0.0f;
+
+        gui.slider(modsig.square, 0, elementY, 100, 20);
+        gui.label(120, elementY + 10, "square");
+        elementY += step;
+
         switch (mode) {
         case 0:
-            gui.checkbox(0, elementY, 20, 20, perSample);
-            elementY += step;
             gui.slider(basicFilter.k, 0, elementY, 100, 20);
-            gui.label(120, elementY+10, "filter");
+            gui.label(120, elementY + 10, "filter");
             elementY += step;
-
-            if (gui.slider(room, 0, elementY, 100, 20)) {
-                freeVerb.set(room, damp);
+            if (gui.slider(fade, 0, elementY, 100, 20)) {
+                fader.balance = (fade - 0.5f) * -2.0f;
             }
-            gui.label(120, elementY+10, "room");
+            gui.label(120, elementY + 10, "fader");
+            break;
+        case 1:
+            if (gui.slider(room, 0, elementY, 100, 20)) {
+                stereoReverb.l.set(room, damp);
+                stereoReverb.r.set(room, damp);
+            }
+            gui.label(120, elementY + 10, "room");
             elementY += step;
 
             if (gui.slider(damp, 0, elementY, 100, 20)) {
-                freeVerb.set(room, damp);
+                stereoReverb.l.set(room, damp);
+                stereoReverb.r.set(room, damp);
             }
-            gui.label(120, elementY+10, "damp");
-
-            if (gui.button(0, 150, 50, 20, "panic")) {
-                freeVerb.panic();
+            gui.label(120, elementY + 10, "damp");
+            elementY += step;
+            if (gui.slider(dry, 0, elementY, 100, 20)) {
+                stereoReverb.dry = dry;
             }
+            gui.label(120, elementY + 10, "dry");
+            elementY += step;
+            if (gui.button(0, elementY, 100, 20, "panic")) {
+                stereoReverb.l.panic();
+                stereoReverb.r.panic();
+            }
+            elementY += step;
+        case 2:
+            gui.slider(basicFilter.k, 0, elementY, 100, 20);
+            gui.label(120, elementY + 10, "filter");
+            break;
         }
         gui.end();
         gui.render();
