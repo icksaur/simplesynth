@@ -221,6 +221,69 @@ struct BasicFilter {
     }
 };
 
+// The Scientist and Engineer's Guide to Digital Signal Processing, ch19, Steven W Smith
+struct StagedFilter {
+    float k; // if this goes to 1.0, y becomes stuck
+    float y[4];
+    StagedFilter() {
+        k = 0.5f;
+    }
+    void process(float & sample) {
+        float k = min(this->k, 0.95f); // cache local K less than 0.5f
+        float x = sample;
+        sample = pow(1 - k, 4) * x;
+        sample += (4.0f * k) * y[0];
+        sample += (6.0f * k * k) * -y[1];
+        sample += (4.0f * pow(k, 3)) * y[2];
+        sample += pow(k, 4) * -y[3];
+        
+        y[3] = y[2];
+        y[2] = y[1];
+        y[1] = y[0];
+        y[0] = sample;
+    }
+};
+
+// The Scientist and Engineer's Guide to Digital Signal Processing, ch19
+struct BandpassFilter {
+    float k; // (0.0 to 0.5] if it goes to zero, it gets stuck
+    float k0; // previous k
+    float BW; // bandwidth
+    float x[2]; // input history
+    float y[2]; // output history
+    float R;
+    float K;
+    float co; // unnamed coefficient which is common
+    void coeff() { // recalculate K, R, and co
+        if (k == k0) return;
+        k = max(k, 0.0001f); // prevent filter getting stuck
+        R = 1.0f - 3.0f * BW;
+        co = 2.0f * cos(2.0f * M_PI * k);
+        K = (1.0f - R * co + (R * R)) / (2.0f - co);
+        k0 = k;
+    }
+    BandpassFilter() {
+        k = 0.2f;
+        BW = 0.01f;
+    }
+    void process(float & sample) {
+        coeff();
+        float x0 = sample;
+        sample = sample * (1.0f - K);
+        sample += x[0] * (K - R) * co;
+        sample += x[1] * (R * R - K);
+        sample += y[0] * R * co;
+        sample += y[1] * -R * R;
+        
+        y[1] = y[0];
+        y[0] = sample;
+        x[1] = x[0];
+        x[0] = x0;
+    }
+};
+
+typedef StagedFilter LowpassFilter;
+
 // explicit delay in sample count
 struct ExplicitDelay {
     int delay;
@@ -397,7 +460,7 @@ Frequency noteFreq;
 ModulatingSignal modsig { 0, 1, 0, 0 };
 FixedSignal fixedsig { 0, 1, 0, 0 };
 Envelope env{0, 0, 1, 0, 0, 0, 4};
-BasicFilter basicFilter{ 0.5 };
+LowpassFilter lowpassFilter;
 AllPassFilter allPassFilter{ 0.5 };
 AllPassDelay allPassDelay{ -0.5, 22050 };
 Delay delay{ 0.5, 0.5 };
@@ -407,6 +470,7 @@ ExplicitDelay ed3{ 3181, 0.5 };
 ExplicitDelay ed4{ 6053, 0.5 };
 ExplicitDelay ed5{ 7919, 0.5 };
 StereoReverb stereoReverb;
+BandpassFilter bandpass;
 LFO lfo{ 0.01, 0.5 };
 Fader fader;
 
@@ -426,15 +490,14 @@ void fillAudio(void *unused, Uint8 *stream, int len) {
         modsig.process(sample);
         env.process(sample, gate);
         if (mode == 0) {
-            basicFilter.process(sample);
+            lowpassFilter.process(sample);
             fader.process(sample, stereoSamples[i]);
         } else if (mode == 1) {
             stereoReverb.process(sample, stereoSamples[i]);
-            basicFilter.process(stereoSamples[i].r);
-            basicFilter.process(stereoSamples[i].l);
+            lowpassFilter.process(stereoSamples[i].r);
+            lowpassFilter.process(stereoSamples[i].l);
         } else {
-            delay.process(sample);
-            basicFilter.process(sample);
+            bandpass.process(sample);
             fader.process(sample, stereoSamples[i]);
         }
     }
@@ -609,12 +672,13 @@ int main(int argc, char *argv[]) {
         static float room = 0.82f;
         static float damp = 0.2f;
         static float fade = 0.5f;
+        static float bandpassK = 0.5f;
 
         param(gui, modsig.sine, "sine");
         param(gui, modsig.square, "square");
         param(gui, modsig.saw, "saw");
         param(gui, modsig.noise, "noise");
-        param(gui, basicFilter.k, "filter");
+        param(gui, lowpassFilter.k, "lowpass");
 
         switch (mode) {
         case 0:
@@ -635,6 +699,10 @@ int main(int argc, char *argv[]) {
                 stereoReverb.r.panic();
             }
             break;
+        case 2:
+            if (param(gui, bandpassK, "bandpass")) {
+                bandpass.k = bandpassK / 2.0f;
+            }
         }
         gui.end();
         gui.render();
