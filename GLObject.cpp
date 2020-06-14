@@ -288,14 +288,14 @@ VAO::VAO(ShaderProgram & program, VAOBuilder & builder) : program(program) {
 
     struct CleanUp {
         unsigned vao, ibo, *vbos, vboCount;
-        bool success = false;
+        bool success;
         ~CleanUp() {
             if (success) return;
             glDeleteVertexArrays(1, &vao);
             glDeleteBuffers(vboCount, vbos);
             glDeleteBuffers(1, &ibo);
         }
-    } cleanup{ vao, ibo, &vbos[0], builder.getVboCount() };
+    } cleanup = { vao, ibo, &vbos[0], builder.getVboCount(), false };
 
     program.use();
     glBindVertexArray(vao);

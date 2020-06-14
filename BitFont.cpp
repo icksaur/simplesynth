@@ -357,7 +357,7 @@ struct sprite_definition {
 vec4 uvco;
 };
 layout(binding=0, std140) uniform sprite_data {
-sprite_definition sprites[];
+sprite_definition sprites[1024];
 };
 layout(location=0) uniform mat4 viewProjection;
 layout(location=0) in vec2 vertex; // object-space vertex of quad, [0,0] to [1,1]

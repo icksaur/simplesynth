@@ -129,8 +129,8 @@ struct Note {
     }
 };
 
-#define wrap(t) t = t > 1.0f ? 0.0f : t
-//#define wrap(t) t = t > 1.0f ? 1-1.0f : t
+//#define wrap(t) t = t > 1.0f ? 0.0f : t
+#define wrap(t) t = t > 1.0f ? 1-1.0f : t
 
 struct Frequency {
     float t;
@@ -149,8 +149,8 @@ struct ModulatingSignal {
     float noise;
     float t;
     void process(float & sample) {
-        float h = sin(2.0 * M_PI * t) * sine;
-        h += (2.0 * t - 1.0) * saw;
+        float h = sin(2.0f * M_PI * t) * sine;
+        h += (2.0f * t - 1.0f) * saw;
         h += (t < 0.5 ? -1 : 1) * square;
         h += ((float)rand() / (float)RAND_MAX * 2.0 - 1.0) * noise;
         t += sample / frequency;
@@ -468,6 +468,15 @@ void main() {
 #endif
 )";
 
+int step = 20;
+int elementY;
+bool param(GUI & gui, float & value, const char * label) {
+    bool result = gui.slider(value, 0, elementY, 100, 20);
+    gui.label(110, elementY + 10, label);
+    elementY += step;
+    return result;
+}
+
 int main(int argc, char *argv[]) {
     srand(time(0));
     int xrez = rez, yrez = rez;
@@ -521,10 +530,9 @@ int main(int argc, char *argv[]) {
     ArrayTexture graphTexture(rez, 1, graphBytes, graphBytesSize);
 
     GUI gui;
-
     int octave = noteA4;
-
     bool running = true;
+
     SDL_Event event;
     while (running) {
         while (SDL_PollEvent(&event)) {
@@ -594,57 +602,38 @@ int main(int argc, char *argv[]) {
         vao.bind();
         glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
-        static int x, y;
+        static int x, y; // window drag
         static char krtString[12];
-        gui.start(x, y, 300, 200, "params");
-        int elementY = 0;
-        int step = 20;
+        gui.start(x, y, 180, 300, "params");
+        elementY = 0;
         static float room = 0.82f;
         static float damp = 0.2f;
         static float fade = 0.5f;
-        static float dry = 0.0f;
 
-        gui.slider(modsig.square, 0, elementY, 100, 20);
-        gui.label(120, elementY + 10, "square");
-        elementY += step;
+        param(gui, modsig.sine, "sine");
+        param(gui, modsig.square, "square");
+        param(gui, modsig.saw, "saw");
+        param(gui, modsig.noise, "noise");
+        param(gui, basicFilter.k, "filter");
 
         switch (mode) {
         case 0:
-            gui.slider(basicFilter.k, 0, elementY, 100, 20);
-            gui.label(120, elementY + 10, "filter");
-            elementY += step;
-            if (gui.slider(fade, 0, elementY, 100, 20)) {
-                fader.balance = (fade - 0.5f) * -2.0f;
-            }
-            gui.label(120, elementY + 10, "fader");
+            if (param(gui, fade, "fader")) fader.balance = (fade - 0.5f) * -2.0f;
             break;
         case 1:
-            if (gui.slider(room, 0, elementY, 100, 20)) {
+            if (param(gui, room, "room")) {
                 stereoReverb.l.set(room, damp);
                 stereoReverb.r.set(room, damp);
             }
-            gui.label(120, elementY + 10, "room");
-            elementY += step;
-
-            if (gui.slider(damp, 0, elementY, 100, 20)) {
+            if (param(gui, damp, "damp")) {
                 stereoReverb.l.set(room, damp);
                 stereoReverb.r.set(room, damp);
             }
-            gui.label(120, elementY + 10, "damp");
-            elementY += step;
-            if (gui.slider(dry, 0, elementY, 100, 20)) {
-                stereoReverb.dry = dry;
-            }
-            gui.label(120, elementY + 10, "dry");
-            elementY += step;
+            param(gui, stereoReverb.dry, "dry");
             if (gui.button(0, elementY, 100, 20, "panic")) {
                 stereoReverb.l.panic();
                 stereoReverb.r.panic();
             }
-            elementY += step;
-        case 2:
-            gui.slider(basicFilter.k, 0, elementY, 100, 20);
-            gui.label(120, elementY + 10, "filter");
             break;
         }
         gui.end();
