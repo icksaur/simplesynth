@@ -130,7 +130,7 @@ struct Note {
 };
 
 //#define wrap(t) t = t > 1.0f ? 0.0f : t
-#define wrap(t) t = t > 1.0f ? 1-1.0f : t
+#define wrap(t) t = t > 1.0f ? t-1.0f : t
 
 struct Frequency {
     float t;
@@ -150,7 +150,7 @@ struct ModulatingSignal {
     float t;
     void process(float & sample) {
         float h = sin(2.0f * M_PI * t) * sine;
-        h += (2.0f * t - 1.0f) * saw;
+        h = t / 0.5f - 1.0f;
         h += (t < 0.5 ? -1 : 1) * square;
         h += ((float)rand() / (float)RAND_MAX * 2.0 - 1.0) * noise;
         t += sample / frequency;
@@ -222,6 +222,7 @@ struct BasicFilter {
 };
 
 // The Scientist and Engineer's Guide to Digital Signal Processing, ch19, Steven W Smith
+// cutoff frequency should be f=0.5..1.0 : e^-2PIf (exp(2.0f * M_PI * f))
 struct StagedFilter {
     float k; // if this goes to 1.0, y becomes stuck
     float y[4];
@@ -264,7 +265,7 @@ struct BandpassFilter {
     }
     BandpassFilter() {
         k = 0.2f;
-        BW = 0.01f;
+        BW = 0.005f;
     }
     void process(float & sample) {
         coeff();
@@ -279,6 +280,63 @@ struct BandpassFilter {
         y[0] = sample;
         x[1] = x[0];
         x[0] = x0;
+    }
+};
+
+struct MoogFilter {
+    float frequency, resonance;
+    enum FilterType { low, high, band } type;
+    float f, p, q;
+    float b0, b1, b2, b3, b4;
+    float t1, t2;
+    MoogFilter(float _frequency, float _resonance) : frequency(_frequency),resonance(_resonance) {
+        set();
+    }
+    void set() {
+        q = 1.0f - frequency;
+        p = frequency + 0.8f * frequency * q;
+        f = p + p - 1.0f;
+        q = resonance * (1.0f + 0.5f * q * (1.0f - q + 5.6f * q * q));
+    }
+    void process(float & sample) {
+        float & in = sample;
+        in -= q * b4;                          //feedback
+        t1 = b1;  b1 = (in + b0) * p - b1 * f;
+        t2 = b2;  b2 = (b1 + t1) * p - b2 * f;
+        t1 = b3;  b3 = (b2 + t2) * p - b3 * f;
+        b4 = (b3 + t1) * p - b4 * f;
+        b4 = b4 - b4 * b4 * b4 * 0.166667f;    //clipping
+        b0 = in;
+
+        switch (type) {
+        case low: sample = b4; break;
+        case high: sample = in - b4; break;
+        case band: sample = 3.0f * (b3 - b4); break;
+        }
+    }
+};
+
+float MoogFreq(float f) {
+    return exp(2.0f * M_PI * f);
+}
+
+typedef BandpassFilter FormantBand;
+
+struct VocalFilter {
+    float dry;
+    FormantBand filters[3];
+    //VocalFilter() : filters{ FormantBand(0.5, 0.9), FormantBand(0.5, 0.9), FormantBand(0.5, 0.9) } {
+    VocalFilter() {
+        filters[0].k = 0.1;
+        filters[1].k = 0.2;
+        filters[2].k = 0.3;
+    }
+    void process(float & sample) {
+        float x0 = sample, x = sample;
+        sample *= dry;
+        filters[0].process(x); sample += x; x = x0;
+        //filters[1].process(x); sample += x; x = x0;
+        //filters[2].process(x); sample += x; x = x0;
     }
 };
 
@@ -398,7 +456,6 @@ struct MonoReverb {
     }
 };
 
-
 struct StereoReverb {
     MonoReverb l;
     MonoReverb r;
@@ -471,6 +528,8 @@ ExplicitDelay ed4{ 6053, 0.5 };
 ExplicitDelay ed5{ 7919, 0.5 };
 StereoReverb stereoReverb;
 BandpassFilter bandpass;
+MoogFilter moogFilter(0.5f, 0.0f);
+VocalFilter vocalFilter;
 LFO lfo{ 0.01, 0.5 };
 Fader fader;
 
@@ -490,14 +549,14 @@ void fillAudio(void *unused, Uint8 *stream, int len) {
         modsig.process(sample);
         env.process(sample, gate);
         if (mode == 0) {
-            lowpassFilter.process(sample);
+            vocalFilter.process(sample);
             fader.process(sample, stereoSamples[i]);
         } else if (mode == 1) {
             stereoReverb.process(sample, stereoSamples[i]);
             lowpassFilter.process(stereoSamples[i].r);
             lowpassFilter.process(stereoSamples[i].l);
         } else {
-            bandpass.process(sample);
+            //moogFilter.process(sample);
             fader.process(sample, stereoSamples[i]);
         }
     }
@@ -667,24 +726,29 @@ int main(int argc, char *argv[]) {
 
         static int x, y; // window drag
         static char krtString[12];
-        gui.start(x, y, 180, 300, "params");
+        gui.start(x, y, 250, 300, "params");
         elementY = 0;
         static float room = 0.82f;
         static float damp = 0.2f;
         static float fade = 0.5f;
-        static float bandpassK = 0.5f;
 
         param(gui, modsig.sine, "sine");
         param(gui, modsig.square, "square");
         param(gui, modsig.saw, "saw");
         param(gui, modsig.noise, "noise");
-        param(gui, lowpassFilter.k, "lowpass");
+
+        const char * filterNames[3]{ "low", "high", "band" };
 
         switch (mode) {
         case 0:
+            param(gui, vocalFilter.dry, "dry");
+            if (param(gui, vocalFilter.filters[0].k, "formant1"));
+            if (param(gui, vocalFilter.filters[1].k, "formant2"));
+            if (param(gui, vocalFilter.filters[2].k, "formant3"));
             if (param(gui, fade, "fader")) fader.balance = (fade - 0.5f) * -2.0f;
             break;
         case 1:
+            param(gui, lowpassFilter.k, "lowpass");
             if (param(gui, room, "room")) {
                 stereoReverb.l.set(room, damp);
                 stereoReverb.r.set(room, damp);
@@ -700,8 +764,14 @@ int main(int argc, char *argv[]) {
             }
             break;
         case 2:
-            if (param(gui, bandpassK, "bandpass")) {
-                bandpass.k = bandpassK / 2.0f;
+            if (param(gui, moogFilter.frequency, "filter")) {
+                moogFilter.set();
+            }
+            if (param(gui, moogFilter.resonance, "resonance")) {
+                moogFilter.set();
+            }
+            if (gui.button(0, elementY, 100, 20, filterNames[moogFilter.type])) {
+                moogFilter.type = (MoogFilter::FilterType)((moogFilter.type + 1) % 3);
             }
         }
         gui.end();
