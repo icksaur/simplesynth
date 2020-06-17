@@ -283,6 +283,30 @@ struct BandpassFilter {
     }
 };
 
+struct BandpassFilter2 {
+    float f; // frequency (resonant frequency / 44100)
+    float r; // bandwidth
+    float x[2]; // input history
+    float y[2]; // output history
+    BandpassFilter2() {
+        f = 0.2f;
+        r = 0.95f;
+    }
+    void process(float & sample) {
+        float x0 = sample;
+        float b0 = (1.0f - r * r) / 2.0f;
+        sample = sample * b0;
+        sample += x[1] * -b0;
+        sample -= y[0] * -2.0f * r * cos(2.0f * M_PI * f);
+        sample -= y[1] * r * r;
+        
+        y[1] = y[0];
+        y[0] = sample;
+        x[1] = x[0];
+        x[0] = x0;
+    }
+};
+
 struct MoogFilter {
     float frequency, resonance;
     enum FilterType { low, high, band } type;
@@ -320,23 +344,40 @@ float MoogFreq(float f) {
     return exp(2.0f * M_PI * f);
 }
 
-typedef BandpassFilter FormantBand;
+typedef BandpassFilter2 FormantBand;
+
+float peak(int hz) {
+    return (float)hz / (float)frequency;
+}
+float bandwidth(int hz) {
+    return 1.0f - (float)hz / (float)frequency;
+}
 
 struct VocalFilter {
     float dry;
     FormantBand filters[3];
-    //VocalFilter() : filters{ FormantBand(0.5, 0.9), FormantBand(0.5, 0.9), FormantBand(0.5, 0.9) } {
+    //VocalFilter()  : filters{ FormantBand(0.1, 0.9), FormantBand(0.2, 0.9), FormantBand(0.3, 0.9) } {
     VocalFilter() {
-        filters[0].k = 0.1;
-        filters[1].k = 0.2;
-        filters[2].k = 0.3;
+        /*
+        filters[0].k = 730.0f / (float)frequency;
+        filters[1].k = 1090.0f / (float)frequency;
+        filters[2].k = 2240.0f / (float)frequency;
+        */
+        filters[0].f = peak(800); filters[0].r = bandwidth(80);
+        filters[1].f = peak(1150); filters[1].r = bandwidth(90);
+        filters[2].f = peak(2900); filters[2].r = bandwidth(120);
+        /*
+        filters[0].set();
+        filters[1].set();
+        filters[2].set();
+        */
     }
     void process(float & sample) {
         float x0 = sample, x = sample;
         sample *= dry;
         filters[0].process(x); sample += x; x = x0;
-        //filters[1].process(x); sample += x; x = x0;
-        //filters[2].process(x); sample += x; x = x0;
+        filters[1].process(x); sample += x; x = x0;
+        filters[2].process(x); sample += x; x = x0;
     }
 };
 
@@ -516,7 +557,7 @@ Note noteGen{ 0.001, 4, 4 };
 Frequency noteFreq;
 ModulatingSignal modsig { 0, 1, 0, 0 };
 FixedSignal fixedsig { 0, 1, 0, 0 };
-Envelope env{0, 0, 1, 0, 0, 0, 4};
+Envelope env{0.05f, 0, 1, 0.05f, 0, 0, 4};
 LowpassFilter lowpassFilter;
 AllPassFilter allPassFilter{ 0.5 };
 AllPassDelay allPassDelay{ -0.5, 22050 };
@@ -544,14 +585,16 @@ void fillAudio(void *unused, Uint8 *stream, int len) {
     for (unsigned i = 0; i < len/sizeof(*stereoSamples); i++) {
         float sample;
         noteGen.generate(sample);
-        //lfo.process(sample);
+        lfo.process(sample);
         noteFreq.process(sample);
         modsig.process(sample);
         env.process(sample, gate);
         if (mode == 0) {
             vocalFilter.process(sample);
+            lowpassFilter.process(sample);
             fader.process(sample, stereoSamples[i]);
         } else if (mode == 1) {
+            vocalFilter.process(sample);
             stereoReverb.process(sample, stereoSamples[i]);
             lowpassFilter.process(stereoSamples[i].r);
             lowpassFilter.process(stereoSamples[i].l);
@@ -737,14 +780,22 @@ int main(int argc, char *argv[]) {
         param(gui, modsig.saw, "saw");
         param(gui, modsig.noise, "noise");
 
+        static float f1, f2, f3 = 0.1f;
+
         const char * filterNames[3]{ "low", "high", "band" };
 
         switch (mode) {
         case 0:
             param(gui, vocalFilter.dry, "dry");
-            if (param(gui, vocalFilter.filters[0].k, "formant1"));
-            if (param(gui, vocalFilter.filters[1].k, "formant2"));
-            if (param(gui, vocalFilter.filters[2].k, "formant3"));
+            /*
+            if (param(gui, vocalFilter.filters[0].frequency, "formant1")) vocalFilter.filters[0].set();
+            if (param(gui, vocalFilter.filters[1].frequency, "formant2")) vocalFilter.filters[1].set();
+            if (param(gui, vocalFilter.filters[2].frequency, "formant3")) vocalFilter.filters[2].set();
+            */
+            if (param(gui, f1, "formant1")) vocalFilter.filters[0].f = f1;
+            if (param(gui, f2, "formant2")) vocalFilter.filters[1].f = f2;
+            if (param(gui, f3, "formant3")) vocalFilter.filters[2].f = f3;
+
             if (param(gui, fade, "fader")) fader.balance = (fade - 0.5f) * -2.0f;
             break;
         case 1:
