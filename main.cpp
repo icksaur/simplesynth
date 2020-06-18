@@ -245,50 +245,12 @@ struct StagedFilter {
     }
 };
 
-// The Scientist and Engineer's Guide to Digital Signal Processing, ch19
 struct BandpassFilter {
-    float k; // (0.0 to 0.5] if it goes to zero, it gets stuck
-    float k0; // previous k
-    float BW; // bandwidth
-    float x[2]; // input history
-    float y[2]; // output history
-    float R;
-    float K;
-    float co; // unnamed coefficient which is common
-    void coeff() { // recalculate K, R, and co
-        if (k == k0) return;
-        k = max(k, 0.0001f); // prevent filter getting stuck
-        R = 1.0f - 3.0f * BW;
-        co = 2.0f * cos(2.0f * M_PI * k);
-        K = (1.0f - R * co + (R * R)) / (2.0f - co);
-        k0 = k;
-    }
-    BandpassFilter() {
-        k = 0.2f;
-        BW = 0.005f;
-    }
-    void process(float & sample) {
-        coeff();
-        float x0 = sample;
-        sample = sample * (1.0f - K);
-        sample += x[0] * (K - R) * co;
-        sample += x[1] * (R * R - K);
-        sample += y[0] * R * co;
-        sample += y[1] * -R * R;
-        
-        y[1] = y[0];
-        y[0] = sample;
-        x[1] = x[0];
-        x[0] = x0;
-    }
-};
-
-struct BandpassFilter2 {
     float f; // frequency (resonant frequency / 44100)
     float r; // bandwidth
     float x[2]; // input history
     float y[2]; // output history
-    BandpassFilter2() {
+    BandpassFilter() {
         f = 0.2f;
         r = 0.95f;
     }
@@ -296,14 +258,16 @@ struct BandpassFilter2 {
         float x0 = sample;
         float b0 = (1.0f - r * r) / 2.0f;
         sample = sample * b0;
-        sample += x[1] * -b0;
+        //sample += x[1] * -b0; // improve response - better without this for vocal filter
         sample -= y[0] * -2.0f * r * cos(2.0f * M_PI * f);
         sample -= y[1] * r * r;
+        //improvment: -dB gain
         
         y[1] = y[0];
         y[0] = sample;
         x[1] = x[0];
         x[0] = x0;
+
     }
 };
 
@@ -320,7 +284,7 @@ struct MoogFilter {
         q = 1.0f - frequency;
         p = frequency + 0.8f * frequency * q;
         f = p + p - 1.0f;
-        q = resonance * (1.0f + 0.5f * q * (1.0f - q + 5.6f * q * q));
+        q = resonance * (1.0f + 0.5f * q * (1.0f -  * (1.0f - (float)i / 5.0f)q + 5.6f * q * q));
     }
     void process(float & sample) {
         float & in = sample;
@@ -344,7 +308,7 @@ float MoogFreq(float f) {
     return exp(2.0f * M_PI * f);
 }
 
-typedef BandpassFilter2 FormantBand;
+typedef BandpassFilter FormantBand;
 
 float peak(int hz) {
     return (float)hz / (float)frequency;
@@ -352,32 +316,29 @@ float peak(int hz) {
 float bandwidth(int hz) {
     return 1.0f - (float)hz / (float)frequency;
 }
+float gain(int db) {
+    return ((float)100 + (float)db) / 100.0f;
+}
 
 struct VocalFilter {
-    float dry;
-    FormantBand filters[3];
-    //VocalFilter()  : filters{ FormantBand(0.1, 0.9), FormantBand(0.2, 0.9), FormantBand(0.3, 0.9) } {
+    int formants;
+    FormantBand filters[5];
     VocalFilter() {
-        /*
-        filters[0].k = 730.0f / (float)frequency;
-        filters[1].k = 1090.0f / (float)frequency;
-        filters[2].k = 2240.0f / (float)frequency;
-        */
+        formants = 5;
         filters[0].f = peak(800); filters[0].r = bandwidth(80);
         filters[1].f = peak(1150); filters[1].r = bandwidth(90);
         filters[2].f = peak(2900); filters[2].r = bandwidth(120);
-        /*
-        filters[0].set();
-        filters[1].set();
-        filters[2].set();
-        */
+        filters[3].f = peak(3900); filters[3].r = bandwidth(130);
+        filters[4].f = peak(4950); filters[4].r = bandwidth(140);
     }
     void process(float & sample) {
         float x0 = sample, x = sample;
-        sample *= dry;
-        filters[0].process(x); sample += x; x = x0;
-        filters[1].process(x); sample += x; x = x0;
-        filters[2].process(x); sample += x; x = x0;
+        sample = 0.0f;
+        for (int i = 0; i < formants; i++) {
+            filters[i].process(x);
+            sample += x;
+            x = x0;
+        }
     }
 };
 
@@ -568,7 +529,6 @@ ExplicitDelay ed3{ 3181, 0.5 };
 ExplicitDelay ed4{ 6053, 0.5 };
 ExplicitDelay ed5{ 7919, 0.5 };
 StereoReverb stereoReverb;
-BandpassFilter bandpass;
 MoogFilter moogFilter(0.5f, 0.0f);
 VocalFilter vocalFilter;
 LFO lfo{ 0.01, 0.5 };
@@ -591,7 +551,7 @@ void fillAudio(void *unused, Uint8 *stream, int len) {
         env.process(sample, gate);
         if (mode == 0) {
             vocalFilter.process(sample);
-            lowpassFilter.process(sample);
+            //lowpassFilter.process(sample);
             fader.process(sample, stereoSamples[i]);
         } else if (mode == 1) {
             vocalFilter.process(sample);
@@ -781,21 +741,15 @@ int main(int argc, char *argv[]) {
         param(gui, modsig.noise, "noise");
 
         static float f1, f2, f3 = 0.1f;
+        static float formants = 1.0f;
 
         const char * filterNames[3]{ "low", "high", "band" };
 
         switch (mode) {
         case 0:
-            param(gui, vocalFilter.dry, "dry");
-            /*
-            if (param(gui, vocalFilter.filters[0].frequency, "formant1")) vocalFilter.filters[0].set();
-            if (param(gui, vocalFilter.filters[1].frequency, "formant2")) vocalFilter.filters[1].set();
-            if (param(gui, vocalFilter.filters[2].frequency, "formant3")) vocalFilter.filters[2].set();
-            */
-            if (param(gui, f1, "formant1")) vocalFilter.filters[0].f = f1;
-            if (param(gui, f2, "formant2")) vocalFilter.filters[1].f = f2;
-            if (param(gui, f3, "formant3")) vocalFilter.filters[2].f = f3;
-
+            if (param(gui, formants, "formants")) {
+                vocalFilter.formants = (int)((formants * 4.0f) + 1.0f);
+            }
             if (param(gui, fade, "fader")) fader.balance = (fade - 0.5f) * -2.0f;
             break;
         case 1:
