@@ -283,7 +283,7 @@ struct MoogFilter {
         q = 1.0f - frequency;
         p = frequency + 0.8f * frequency * q;
         f = p + p - 1.0f;
-        q = resonance * (1.0f + 0.5f * q * (1.0f -  * (1.0f - (float)i / 5.0f)q + 5.6f * q * q));
+        q = resonance * (1.0f + 0.5f * q * (1.0f - q + 5.6f * q * q));
     }
     void process(float & sample) {
         float & in = sample;
