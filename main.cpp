@@ -261,13 +261,12 @@ struct BandpassFilter {
         //sample += x[1] * -b0; // improve response - better without this for vocal filter
         sample -= y[0] * -2.0f * r * cos(2.0f * M_PI * f);
         sample -= y[1] * r * r;
-        //improvment: -dB gain
+        //improvement: multiply this by some -dB gain
         
         y[1] = y[0];
         y[0] = sample;
         x[1] = x[0];
         x[0] = x0;
-
     }
 };
 
