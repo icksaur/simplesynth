@@ -261,7 +261,7 @@ struct BandpassFilter {
         //sample += x[1] * -b0; // improve response - better without this for vocal filter
         sample -= y[0] * -2.0f * r * cos(2.0f * M_PI * f);
         sample -= y[1] * r * r;
-        //improvement: multiply this by some -dB gain
+        //improvement: multiply this by some -dB gain to balance formants
         
         y[1] = y[0];
         y[0] = sample;
@@ -319,16 +319,26 @@ float gain(int db) {
     return ((float)100 + (float)db) / 100.0f;
 }
 
+struct FormantVowel {
+    int hz[5];
+    int db[5];
+    int bw[5];
+};
+
+#include "formants.h"
+
 struct VocalFilter {
     int formants;
     FormantBand filters[5];
     VocalFilter() {
         formants = 5;
-        filters[0].f = peak(800); filters[0].r = bandwidth(80);
-        filters[1].f = peak(1150); filters[1].r = bandwidth(90);
-        filters[2].f = peak(2900); filters[2].r = bandwidth(120);
-        filters[3].f = peak(3900); filters[3].r = bandwidth(130);
-        filters[4].f = peak(4950); filters[4].r = bandwidth(140);
+        setVowelFormants(&soprano_a);
+    }
+    void setVowelFormants(FormantVowel * vowel) {
+        for (int i = 0; i < 5; i++) {
+            filters[i].f = peak(vowel->hz[i]);
+            filters[i].r = bandwidth(vowel->bw[i]);
+        }
     }
     void process(float & sample) {
         float x0 = sample, x = sample;
