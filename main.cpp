@@ -150,7 +150,7 @@ struct ModulatingSignal {
     float t;
     void process(float & sample) {
         float h = sin(2.0f * M_PI * t) * sine;
-        h = t / 0.5f - 1.0f;
+        h += (t / 0.5f - 1.0f) * saw;
         h += (t < 0.5 ? -1 : 1) * square;
         h += ((float)rand() / (float)RAND_MAX * 2.0 - 1.0) * noise;
         t += sample / frequency;
@@ -158,7 +158,6 @@ struct ModulatingSignal {
         wrap(t);
     }
 };
-
 
 // Waveform will not change until period is over. 
 // Period is snapped to sample count.
@@ -521,7 +520,53 @@ struct Fader {
     }
 };
 
-int baseDelay = 441;
+const unsigned MaxSamples = frequency * 60;
+
+struct Sampler {
+    float * samples;
+    float overdubDecay;
+    unsigned sampleCount;
+    Sampler() = delete;
+    Sampler(unsigned sampleCount) : sampleCount(sampleCount), overdubDecay(0.5f) {
+        if (sampleCount > MaxSamples) throw std::runtime_error("sampler max exceeded");
+        samples = new float[sampleCount];
+    }
+    ~Sampler() {
+        delete[] samples;
+    }
+};
+
+struct SamplerWriteHead {
+    Sampler & sampler;
+    float overdubDecay;
+    unsigned writeHead;
+    SamplerWriteHead(Sampler & sampler) : sampler(sampler), overdubDecay(1.0f), writeHead(0) { }
+    void write(float * samples, unsigned sampleCount) {
+        unsigned readHead = 0;
+        while (sampleCount) {
+            sampler.samples[writeHead] *= overdubDecay; // naive attempt to prevent maxing out the sample and clipping
+            sampler.samples[writeHead] += samples[readHead];
+            readHead++;
+            sampleCount--;
+            if (writeHead >= sampler.sampleCount) writeHead = 0;
+        }
+    }
+};
+
+struct SamplerReadHead {
+    Sampler & sampler;
+    float speed;
+    float readHead;
+    SamplerReadHead(Sampler & sampler) :speed(1.0f), sampler(sampler), readHead(0.0f) {}
+    void process(float * samples, unsigned sampleCount) {
+        unsigned writeHead = 0;
+        while (sampleCount < 0) {
+            samples[writeHead] = sampler.samples[(unsigned)readHead];
+            writeHead++;
+            sampleCount--;
+        }
+    }
+};
 
 Note noteGen{ 0.001, 4, 4 };
 Frequency noteFreq;
