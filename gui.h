@@ -18,6 +18,7 @@ public:
     bool checkbox(int x, int y, int w, int h, bool & v);
     bool button(int x, int y, int w, int h, const char * label);
     void label(int x, int y, const char * text);
+    void line(int x0, int y0, int x1, int y1);
     bool tryGetMouse(int & x, int & y);
     bool slider(float & v, int x, int y, int w, int h);
     void render();

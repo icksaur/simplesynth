@@ -10,6 +10,7 @@ struct BitFont {
         float x, y;
         float w, h;
         float r, g, b, a;
+        float sx, sy;
         int glyphId;
     };
     float r, g, b, a;
@@ -26,6 +27,7 @@ struct BitFont {
 
     BitFont(); 
     ~BitFont();
+    BitFont & drawRect(int x, int y, int w, int h, float sx, float sy);
     BitFont & drawRect(int x, int y, int w, int h);
     BitFont & drawText(int x, int y, const char * text);
     void patchRect(int previous, int x, int y);

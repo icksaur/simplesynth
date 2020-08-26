@@ -6,592 +6,58 @@
 #include "GLObject.h"
 #include "glxw.h"
 #include "gui.h"
+#include "synth.h"
 
 using namespace std;
 
-const int noteA4 = 48;
-const int frequency = 44100;
-unsigned int sampleFrequency = 0;
-unsigned int audioBufferSize = 0;
-
+const int windowResolution = 512;
 int gate;
 
-const float envelopePopThreshold = 0.003;
-const int delayBufferSize = 88211; // prime larger than 2 * 44100
-
-const int rez = 512;
-
 SDL_Renderer * renderer;
-int graph[rez];
+int graph[windowResolution];
 bool graphDirty = false;
-void renderState(float * samples, int count) {
+void renderWaveform(float * samples, int count) {
     const float min = -1.0f;
     const float max = 1.0f;
     const float range = max - min;
     if (!graphDirty) return;
     graphDirty = false;
-    int width = count < rez ? count : rez;
+    int width = count < windowResolution ? count : windowResolution;
     for (int i = 0; i < width; i++) {
-        graph[i] = rez - (samples[i] - min) / range * rez;
+        graph[i] = windowResolution - (int)((samples[i] - min) / range * (float)windowResolution);
     }
 }
 
-float noteFreqency(float a) {
-    return 27.5f * pow(2.0f, (float)a);
-}
-float noteFreqency(int a, int halfSteps) {
-    return noteFreqency((float)a + (float)halfSteps / 12.0f);
-}
-
-struct StereoSample { float l, r; };
-
-struct Envelope {
-    float a, d, s, r;
-    float t;
-    int _gate;
-    char state; 
-    float amp;
-    void trigger() {
-        _gate = 1;
-        state = 0; 
-        t = 0;
-    }
-    void process(float & sample, int gate) {
-        float amp1;
-        if (_gate && !gate) {
-            if (state < 3) {
-                state = 3; t = 0;
-            }
-            _gate = gate;
-        }
-        switch(state) {
-        case 0:
-            if(a && t < 1) {
-                amp1 = t;
-                t += 1 / a / (float)frequency;
-                break;
-            }
-            t = 0;
-            state++;
-        case 1:
-            if (d && state < 2) {
-                amp1 = (1 - t * (1 - s));
-                t += 1 / d / (float)frequency;
-                if (t >= 1) {
-                    state++;
-                    t = 0;
-                }
-                break;
-            }
-            t = 0;
-            state++;
-        case 2:
-            amp1 = s;
-            break;
-        case 3:
-            if (r && t < 1) {
-                amp1 = s * (1-t);
-                t += 1 / r / frequency;
-                break;
-            }
-            t = 0;
-            state = 4;
-        case 4:
-            amp1 = 0;
-        }
-        float ampDif = amp1 - amp;
-        if (abs(ampDif) > envelopePopThreshold) {
-            amp1 = amp + copysign(envelopePopThreshold, ampDif);
-        }
-        sample *= amp1;
-        amp = amp1;
-    }
-};
-
-struct Note {
-    float glide;
-    float note;
-    float note0;
-    float t;
-    void generate(float * samples, int count) {
-        for (int i = 0; i < count; i++) {
-            generate(samples[i]);
-        }
-    }
-    void generate(float & sample) {
-        float n = (note * t + note0 * (1 - t));
-        t += 1 / (float)frequency / glide;
-        if (t >= 1) {
-            t = 1;
-            note0 = note;
-        }
-        sample = n;
-    }
-};
-
-//#define wrap(t) t = t > 1.0f ? 0.0f : t
-#define wrap(t) t = t > 1.0f ? t-1.0f : t
-
-struct Frequency {
-    float t;
-    void process(float & sample) {
-        sample = noteFreqency(sample);
-        t += 1 / sample;
-        wrap(t);
-    }
-};
-
-// Generates waveforms which will bend each sample by sample frequency.
-struct ModulatingSignal {
-    float sine;
-    float saw;
-    float square;
-    float noise;
-    float t;
-    void process(float & sample) {
-        float h = sin(2.0f * M_PI * t) * sine;
-        h += (t / 0.5f - 1.0f) * saw;
-        h += (t < 0.5 ? -1 : 1) * square;
-        h += ((float)rand() / (float)RAND_MAX * 2.0 - 1.0) * noise;
-        t += sample / frequency;
-        sample = h;
-        wrap(t);
-    }
-};
-
-// Waveform will not change until period is over. 
-// Period is snapped to sample count.
-struct FixedSignal {
-    float sine;
-    float tri;
-    float square;
-    float noise;
-    int wavelength;
-    int cursor;
-    void process(float & sample) {
-        if (cursor >= wavelength - 1) {
-            wavelength = frequency / sample;
-            cursor = 0;
-        }
-        float t = (float)cursor / (float)(wavelength - 1);
-        float h = sin(2.0 * M_PI * t) * sine;
-        h += (2.0 * t - 1.0) * tri;
-        h += (t < 0.5 ? -1 : 1) * square;
-        h += ((float)rand() / (float)RAND_MAX * 2.0 - 1.0) * noise;
-        sample = h;
-        cursor++;
-    }
-};
-
-struct LFO {
-    float amplitude;
-    float period;
-    float t;
-    void process(float & sample) {
-        sample += sin(2.0 * M_PI * t) * amplitude;
-        t += 1 / (float)frequency / period;
-        wrap(t);
-    }
-};
-
-const int window = 7;
-
-// A delay with no feedback (first two statements of process are reversed)
-struct CombFilter {
-    float decay;
-    int delay;
-    int read;
-    float buffer[delayBufferSize];
-    float process(float sample) {
-        buffer[(read + delay) % delayBufferSize] = sample * decay;
-        sample += buffer[read];
-        read++;
-        read %= delayBufferSize;
-        return sample;
-    }
-};
-
-struct BasicFilter {
-    float k;
-    float r;
-    void process(float & sample) {
-        sample = (sample - r) * k + r;
-        r = sample;
-    }
-};
-
-// The Scientist and Engineer's Guide to Digital Signal Processing, ch19, Steven W Smith
-// cutoff frequency should be f=0.5..1.0 : e^-2PIf (exp(2.0f * M_PI * f))
-struct StagedFilter {
-    float k; // if this goes to 1.0, y becomes stuck
-    float y[4];
-    StagedFilter() {
-        k = 0.5f;
-    }
-    void process(float & sample) {
-        float k = min(this->k, 0.95f); // cache local K less than 0.5f
-        float x = sample;
-        sample = pow(1 - k, 4) * x;
-        sample += (4.0f * k) * y[0];
-        sample += (6.0f * k * k) * -y[1];
-        sample += (4.0f * pow(k, 3)) * y[2];
-        sample += pow(k, 4) * -y[3];
-        
-        y[3] = y[2];
-        y[2] = y[1];
-        y[1] = y[0];
-        y[0] = sample;
-    }
-};
-
-struct BandpassFilter {
-    float f; // frequency (resonant frequency / 44100)
-    float r; // bandwidth
-    float x[2]; // input history
-    float y[2]; // output history
-    BandpassFilter() {
-        f = 0.2f;
-        r = 0.95f;
-    }
-    void process(float & sample) {
-        float x0 = sample;
-        float b0 = (1.0f - r * r) / 2.0f;
-        sample = sample * b0;
-        //sample += x[1] * -b0; // improve response - better without this for vocal filter
-        sample -= y[0] * -2.0f * r * cos(2.0f * M_PI * f);
-        sample -= y[1] * r * r;
-        //improvement: multiply this by some -dB gain to balance formants
-        
-        y[1] = y[0];
-        y[0] = sample;
-        x[1] = x[0];
-        x[0] = x0;
-    }
-};
-
-struct MoogFilter {
-    float frequency, resonance;
-    enum FilterType { low, high, band } type;
-    float f, p, q;
-    float b0, b1, b2, b3, b4;
-    float t1, t2;
-    MoogFilter(float _frequency, float _resonance) : frequency(_frequency),resonance(_resonance) {
-        set();
-    }
-    void set() {
-        q = 1.0f - frequency;
-        p = frequency + 0.8f * frequency * q;
-        f = p + p - 1.0f;
-        q = resonance * (1.0f + 0.5f * q * (1.0f - q + 5.6f * q * q));
-    }
-    void process(float & sample) {
-        float & in = sample;
-        in -= q * b4;                          //feedback
-        t1 = b1;  b1 = (in + b0) * p - b1 * f;
-        t2 = b2;  b2 = (b1 + t1) * p - b2 * f;
-        t1 = b3;  b3 = (b2 + t2) * p - b3 * f;
-        b4 = (b3 + t1) * p - b4 * f;
-        b4 = b4 - b4 * b4 * b4 * 0.166667f;    //clipping
-        b0 = in;
-
-        switch (type) {
-        case low: sample = b4; break;
-        case high: sample = in - b4; break;
-        case band: sample = 3.0f * (b3 - b4); break;
-        }
-    }
-};
-
-float MoogFreq(float f) {
-    return exp(2.0f * M_PI * f);
-}
-
-typedef BandpassFilter FormantBand;
-
-float peak(int hz) {
-    return (float)hz / (float)frequency;
-}
-float bandwidth(int hz) {
-    return 1.0f - (float)hz / (float)frequency;
-}
-float gain(int db) {
-    return ((float)100 + (float)db) / 100.0f;
-}
-
-struct FormantVowel {
-    int hz[5];
-    int db[5];
-    int bw[5];
-};
-
-#include "formants.h"
-
-struct VocalFilter {
-    int formants;
-    FormantBand filters[5];
-    VocalFilter() {
-        formants = 5;
-        setVowelFormants(&soprano_a);
-    }
-    void setVowelFormants(FormantVowel * vowel) {
-        for (int i = 0; i < 5; i++) {
-            filters[i].f = peak(vowel->hz[i]);
-            filters[i].r = bandwidth(vowel->bw[i]);
-        }
-    }
-    void process(float & sample) {
-        float x0 = sample, x = sample;
-        sample = 0.0f;
-        for (int i = 0; i < formants; i++) {
-            filters[i].process(x);
-            sample += x;
-            x = x0;
-        }
-    }
-};
-
-typedef StagedFilter LowpassFilter;
-
-// explicit delay in sample count
-struct ExplicitDelay {
-    int delay;
-    float decay;
-    int read;
-    float buffer[delayBufferSize];
-    void process(float & sample) {
-        sample += buffer[read];
-        buffer[(read + delay) % delayBufferSize] = sample * decay;
-        read++;
-        read %= delayBufferSize;
-    }
-};
-
-struct AllPassDelay {
-    float k;
-    int delay;
-    float buffer[frequency];
-    int read;
-    void process(float & sample) {
-        float r1 = buffer[read] + sample * k; // peek in delay
-        sample = r1 * -k + buffer[read];
-        buffer[(read + delay) % frequency] = r1 * 0.5;
-        ++read %= frequency;
-    }
-};
-
-// Not sure what this does. It's a building block for other things.
-struct AllPassFilter {
-    float k;
-    float r;
-    void process(float & sample) {
-        float r1 = sample + r * k;
-        sample = r1 * -k + r;
-        r = r1;
-    }
-};
-
-// from explanation at https://www.dsprelated.com/freebooks/pasp/Freeverb.html
-const int combSize = 3000;
-struct LowpassFeedbackCombFilter {
-    float damp, room;
-    int n;
-    int read;
-    float * buffer;
-    float onepole;
-    LowpassFeedbackCombFilter(float room, float damp, int delay) {
-        if (delay >= combSize) throw std::runtime_error("delay is too long");
-        this->damp = damp;
-        this->room = room;
-        this->n = delay;
-        buffer = new float[combSize]; // guess this could be n
-        memset(buffer, 0, sizeof(float) * combSize);
-        read = combSize - n;
-        onepole = 0.0f;
-    }
-    ~LowpassFeedbackCombFilter() {
-        delete[] buffer;
-    }
-    float process(float x) {
-        float y = buffer[read]; // delay line
-        onepole = (1.0f - damp) / (1.0f - damp * onepole);
-        int write = (read + n) % combSize;
-        buffer[write] = x + room * onepole * y;
-        read = (read + 1) % combSize;
-        return y;
-    }
-};
-
-typedef LowpassFeedbackCombFilter LBCF;
-
-const float defaultRoom = 0.84f;
-const float allPassGain = 0.618f; // reciporical of golden ratio
-
-struct MonoReverb {
-    LBCF * combs[8];
-    AllPassDelay * allpass[4];
-    MonoReverb() {
-        combs[0] = new LBCF(defaultRoom, .2, 1617);
-        combs[1] = new LBCF(defaultRoom, .2, 1557);
-        combs[2] = new LBCF(defaultRoom, .2, 1491);
-        combs[3] = new LBCF(defaultRoom, .2, 1277);
-        combs[4] = new LBCF(defaultRoom, .2, 1422);
-        combs[5] = new LBCF(defaultRoom, .2, 1356);
-        combs[6] = new LBCF(defaultRoom, .2, 1188);
-        combs[7] = new LBCF(defaultRoom, .2, 1116);
-        allpass[1] = new AllPassDelay{allPassGain, 556};
-        allpass[2] = new AllPassDelay{allPassGain, 441};
-        allpass[3] = new AllPassDelay{allPassGain, 341};
-        allpass[0] = new AllPassDelay{allPassGain, 225};
-    }
-    void set(float room, float damp) {
-        for (int i = 0; i < 8; i++) {
-            combs[i]->room = room;
-            if (damp < 1.0f) combs[i]->damp = damp;
-        }
-    }
-    void panic() {
-        for (int i = 0; i < 8; i++) memset(combs[i]->buffer, 0, sizeof(float)*combSize);
-        for (int i = 0; i < 8; i++) combs[i]->onepole = 0.0f;
-        for (int i = 0; i < 4; i++) memset(allpass[i]->buffer, 0, sizeof(float)*frequency);
-    }
-    void process(float & sample) {
-        float out = 0;
-        for (int j = 0; j < 8; j++) {
-            out += combs[j]->process(sample);
-        }
-        sample = out;
-        for (int i = 0; i < 4; i++) {
-            allpass[i]->process(sample);
-        }
-    }
-};
-
-struct StereoReverb {
-    MonoReverb l;
-    MonoReverb r;
-    float dry;
-    StereoReverb() {
-        dry = 0.0f;
-        for (int i = 0; i < 8; i++)
-            r.combs[i]->n += 23;
-        for (int i = 0; i < 4; i++) {
-            r.allpass[i]->delay += 23;
-        }
-    }
-    void process(float sample, StereoSample & stereoSample) {
-        stereoSample.l = stereoSample.r = sample;
-        r.process(stereoSample.r);
-        stereoSample.r += dry * sample;
-        l.process(stereoSample.l);
-        stereoSample.l += dry * sample;
-    }
-};
-
-#define nwrap(i) i < 0 ? (float)delayBufferSize - i : i
-
-struct Delay {
-    float delay;
-    float decay;
-    int write;
-    float buffer[delayBufferSize];
-
-    void process(float & sample) {
-        float read = (float)write - (float)frequency * delay;
-        if (read < 0) {
-            read = (float)delayBufferSize + read;
-        }
-        float t = fmod(read, 1);
-        int read0 = (int)read;
-        int read1 = ((int)read+1) % delayBufferSize;
-        sample += buffer[read0] * t + buffer[read1] * (1 - t);
-        buffer[write] = sample * decay;
-        write++;
-        write %= delayBufferSize;
-    }
-};
-
-struct Fader {
-    float balance;
-    void process(float sample, StereoSample & stereoSample) {
-        float left = 0.5f + (balance * 0.5f);
-        float right = 0.5f - (balance * 0.5f);
-        stereoSample.l = left * sample;
-        stereoSample.r = right * sample;
-    }
-};
-
-const unsigned MaxSamples = frequency * 60;
-
-struct Sampler {
-    float * samples;
-    float overdubDecay;
-    unsigned sampleCount;
-    Sampler() = delete;
-    Sampler(unsigned sampleCount) : sampleCount(sampleCount), overdubDecay(0.5f) {
-        if (sampleCount > MaxSamples) throw std::runtime_error("sampler max exceeded");
-        samples = new float[sampleCount];
-    }
-    ~Sampler() {
-        delete[] samples;
-    }
-};
-
-struct SamplerWriteHead {
-    Sampler & sampler;
-    float overdubDecay;
-    unsigned writeHead;
-    SamplerWriteHead(Sampler & sampler) : sampler(sampler), overdubDecay(1.0f), writeHead(0) { }
-    void write(float * samples, unsigned sampleCount) {
-        unsigned readHead = 0;
-        while (sampleCount) {
-            sampler.samples[writeHead] *= overdubDecay; // naive attempt to prevent maxing out the sample and clipping
-            sampler.samples[writeHead] += samples[readHead];
-            readHead++;
-            sampleCount--;
-            if (writeHead >= sampler.sampleCount) writeHead = 0;
-        }
-    }
-};
-
-struct SamplerReadHead {
-    Sampler & sampler;
-    float speed;
-    float readHead;
-    SamplerReadHead(Sampler & sampler) :speed(1.0f), sampler(sampler), readHead(0.0f) {}
-    void process(float * samples, unsigned sampleCount) {
-        unsigned writeHead = 0;
-        while (sampleCount < 0) {
-            samples[writeHead] = sampler.samples[(unsigned)readHead];
-            writeHead++;
-            sampleCount--;
-        }
-    }
-};
-
-Note noteGen{ 0.001, 4, 4 };
+Note noteGen{ 0.001f, 4, 4 };
 Frequency noteFreq;
 ModulatingSignal modsig { 0, 1, 0, 0 };
 FixedSignal fixedsig { 0, 1, 0, 0 };
 Envelope env{0.05f, 0, 1, 0.05f, 0, 0, 4};
 LowpassFilter lowpassFilter;
-AllPassFilter allPassFilter{ 0.5 };
-AllPassDelay allPassDelay{ -0.5, 22050 };
-Delay delay{ 0.5, 0.5 };
-ExplicitDelay ed1{ 229, 0.5 };
-ExplicitDelay ed2{ 1069, 0.5 };
-ExplicitDelay ed3{ 3181, 0.5 };
-ExplicitDelay ed4{ 6053, 0.5 };
-ExplicitDelay ed5{ 7919, 0.5 };
+AllPassFilter allPassFilter{ 0.5f };
+AllPassDelay allPassDelay{ -0.5f, 22050 };
+Delay delay{ 0.5f, 0.5f };
+ExplicitDelay ed1{ 229, 0.5f };
+ExplicitDelay ed2{ 1069, 0.5f };
+ExplicitDelay ed3{ 3181, 0.5f };
+ExplicitDelay ed4{ 6053, 0.5f };
+ExplicitDelay ed5{ 7919, 0.5f };
 StereoReverb stereoReverb;
 MoogFilter moogFilter(0.5f, 0.0f);
 VocalFilter vocalFilter;
-LFO lfo{ 0.01, 0.5 };
+LFO lfo{ 0.01f, 0.5f };
 Fader fader;
+
+Sampler sampler(frequency * 10);
+SamplerWriteHead writeHead(sampler);
+SamplerReadHead readHead(sampler);
 
 int mode = 0;
 
 float monoSamples[1024];
-#define FLOATSTREAM (float*)monoSamples, len / 4
+
+bool isPlaying = false;
+bool isWriting = false;
 
 void fillAudio(void *unused, Uint8 *stream, int len) {
     float * floatStream = (float*)stream;
@@ -616,8 +82,11 @@ void fillAudio(void *unused, Uint8 *stream, int len) {
             //moogFilter.process(sample);
             fader.process(sample, stereoSamples[i]);
         }
+
+        if (isWriting) writeHead.write((float*)(&stereoSamples[i]), 2);
+        if (isPlaying && !isWriting) readHead.process((float*)(&stereoSamples[i]), 2);
     }
-    renderState((float*)stream, len);
+    renderWaveform((float*)stream, len);
 }
 
 void noteOn(SDL_Event & e, int note) {
@@ -657,10 +126,10 @@ bool param(GUI & gui, float & value, const char * label) {
 }
 
 int main(int argc, char *argv[]) {
-    srand(time(0));
-    int xrez = rez, yrez = rez;
+    srand((unsigned)time(0)); // for noise generator
+    int xwindowResolution = windowResolution, ywindowResolution = windowResolution;
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO);
-    SDL_Window * window = SDL_CreateWindow("test", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, xrez, xrez, SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI);
+    SDL_Window * window = SDL_CreateWindow("test", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, xwindowResolution, xwindowResolution, SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI);
     SDL_GLContext context = SDL_GL_CreateContext(window);
 
     struct OnExit {
@@ -702,11 +171,11 @@ int main(int argc, char *argv[]) {
     float vertices[] = { -w,-w, 0,0, -w,w, 0,1, w,w, 1,1, w,-w, 1,0 };
     vao.vertexData(vertices, sizeof(vertices));
 
-    unsigned graphBytesSize = rez * rez * 4;
+    unsigned graphBytesSize = windowResolution * windowResolution * 4;
     char * graphBytes = new char[graphBytesSize];
     unsigned * graphTexels = (unsigned*)graphBytes;
     memset(graphBytes, 0, graphBytesSize);
-    ArrayTexture graphTexture(rez, 1, graphBytes, graphBytesSize);
+    ArrayTexture graphTexture(windowResolution, 1, graphBytes, graphBytesSize);
 
     GUI gui;
     int octave = noteA4;
@@ -717,6 +186,7 @@ int main(int argc, char *argv[]) {
         while (SDL_PollEvent(&event)) {
             switch (event.type) {
             case SDL_KEYDOWN:
+                if (event.key.repeat == 1) break;
                 switch (event.key.keysym.sym) {
                 case SDLK_ESCAPE: running = false; break;
                 case SDLK_a: noteOn(event, octave); break;
@@ -736,6 +206,8 @@ int main(int argc, char *argv[]) {
                 case SDLK_PAGEDOWN: octave = octave ? octave - 12 : octave; break;
                 case SDLK_PAGEUP: octave = octave < (12 * 7) ? octave + 12 : octave; break;
                 case SDLK_SPACE: ++mode %= 3; break;
+                case SDLK_r: writeHead.writeHead = 0; isWriting = true; break;
+                case SDLK_p: readHead.readHead = 0; isPlaying = true; break;
                 }
                 break;
             case SDL_KEYUP:
@@ -753,28 +225,30 @@ int main(int argc, char *argv[]) {
                 case SDLK_u: gate--; break;
                 case SDLK_j: gate--; break;
                 case SDLK_k: gate--; break;
+                case SDLK_r: isWriting = false; break;
+                case SDLK_p: readHead.readHead = 0; isPlaying = false; break;
                 }
                 break;
             case SDL_QUIT:
                 running = false;
                 break;
-            case SDL_MOUSEMOTION: gui.pushMouseMotion(event.motion.x, rez - event.motion.y); break;
-            case SDL_MOUSEBUTTONDOWN: if (event.button.button == SDL_BUTTON_LEFT) gui.pushMouseDown(0, event.button.x, rez - event.button.y); break;
-            case SDL_MOUSEBUTTONUP: if (event.button.button == SDL_BUTTON_LEFT) gui.pushMouseUp(0, event.button.x, rez - event.button.y); break;
+            case SDL_MOUSEMOTION: gui.pushMouseMotion(event.motion.x, windowResolution - event.motion.y); break;
+            case SDL_MOUSEBUTTONDOWN: if (event.button.button == SDL_BUTTON_LEFT) gui.pushMouseDown(0, event.button.x, windowResolution - event.button.y); break;
+            case SDL_MOUSEBUTTONUP: if (event.button.button == SDL_BUTTON_LEFT) gui.pushMouseUp(0, event.button.x, windowResolution - event.button.y); break;
             }
         }
 
-        memset(graphTexels, 0, sizeof(unsigned) * rez * rez);
-        for (int i = 0; i < rez; i++) {
-            for (int j = 0; j < rez; j++) {
+        memset(graphTexels, 0, sizeof(unsigned) * windowResolution * windowResolution);
+        for (int i = 0; i < windowResolution; i++) {
+            for (int j = 0; j < windowResolution; j++) {
                 if (graph[i] < j) {
-                    graphTexels[rez * j + i] = 0xFFFFFFFF;
+                    graphTexels[windowResolution * j + i] = 0xFFFFFFFF;
                 }
             }
         }
         glActiveTexture(GL_TEXTURE0 + 0);
         graphTexture.bind();
-        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, rez, rez, 1, GL_RGBA, GL_UNSIGNED_BYTE, graphTexels);
+        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, windowResolution, windowResolution, 1, GL_RGBA, GL_UNSIGNED_BYTE, graphTexels);
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         program.use();
@@ -833,6 +307,8 @@ int main(int argc, char *argv[]) {
                 moogFilter.type = (MoogFilter::FilterType)((moogFilter.type + 1) % 3);
             }
         }
+        if (isWriting) gui.label(0, elementY+step/2, "rec");
+        else if (isPlaying) gui.label(0, elementY+step/2, "play");
         gui.end();
         gui.render();
         graphDirty = true;

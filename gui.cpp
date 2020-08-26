@@ -174,6 +174,15 @@ bool GUI::dragBox(int & x, int & y, int w, int h) {
     f.setColor(hot ? hotColor : hover ? elementHighlightColor : elementColor).drawRect(x, y, w, h); // box
     return hot;
 }
+void GUI::line(int x0, int y0, int x1, int y1) {
+    int w = x1 - x0;
+    int h = y1 - y0;
+    if (abs(w) >= abs(h)) { // horizontal box sheared up
+        f.setColor(elementHighlightColor).drawRect(x0, y0, w, 1, 0.0f, (float)h/(float)w);
+    } else {
+        f.setColor(elementHighlightColor).drawRect(x0, y0, 1, h, (float)w/(float)h, 0.0f);
+    }
+}
 void GUI::start(int & x, int & y, int w, int h, const char * text) {
     scope = Rect{ x, y, w, h };
     int dragy = y + h - windowBarHeight;

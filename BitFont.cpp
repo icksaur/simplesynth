@@ -357,21 +357,23 @@ struct sprite_definition {
 vec4 uvco;
 };
 layout(binding=0, std140) uniform sprite_data {
-sprite_definition sprites[1024];
+sprite_definition sprites[];
 };
 layout(location=0) uniform mat4 viewProjection;
 layout(location=0) in vec2 vertex; // object-space vertex of quad, [0,0] to [1,1]
 layout(location=1) in vec2 location; // screen-space bottom-left of sprite, from top-left of window at t=0
 layout(location=2) in vec2 scale; // screen-space bottom-left of sprite, from top-left of window at t=0
 layout(location=3) in vec4 color;
-layout(location=4) in int index; // sprite in batch
+layout(location=4) in vec2 shear; // for drawing lines
+layout(location=5) in int index; // sprite in batch
 out vec2 textureCoordinate; // 0,0 to 1,1 uv coordiantes from bottomleft of image
 out vec4 ocolor;
 
 void main() {
 sprite_definition sprite = sprites[index];
 ocolor = color;
-vec2 position = location + (scale * vertex);
+mat2 shearMatrix = mat2(1.0, shear.y, shear.x, 1.0);
+vec2 position = location + (shearMatrix * (scale * vertex));
 gl_Position = viewProjection * vec4(position.xy, 0.0, 1.0);
 textureCoordinate.x = sprite.uvco.s + sprite.uvco.p * vertex.x;
 textureCoordinate.y = sprite.uvco.t + sprite.uvco.q * vertex.y;
@@ -391,10 +393,11 @@ gl_FragColor = ocolor * texel;
     VAOBuilder builder(2);
     builder.addFloats(0, 0, 2);
     builder.setDivisor(1);
-    builder.addFloats(1, 1, 2);
-    builder.addFloats(1, 2, 2);
-    builder.addFloats(1, 3, 4);
-    builder.addInts(1, 4, 1);
+    builder.addFloats(1, 1, 2); // location
+    builder.addFloats(1, 2, 2); // scale
+    builder.addFloats(1, 3, 4); // color
+    builder.addFloats(1, 4, 2); // shear
+    builder.addInts(1, 5, 1); // sprite index
     vao = new VAO(*program, builder);
     float square[] = { 0, 0, 1, 0, 1, 1, 0, 1 };
     vao->vertexData(square, sizeof(float) * 8, 0);
@@ -417,6 +420,7 @@ gl_FragColor = ocolor * texel;
     }
     texture = new ArrayTexture(64, 1, &textureBytes[0], textureBytes.size());
 
+    BitFont & drawRect(int x, int y, int w, int h);
     const unsigned char questionGlyphIndex = 63;
     memset(asciiToGlyph, questionGlyphIndex, sizeof(asciiToGlyph));
     std::vector<BitFont::Glyph> glyphBytes(96);
@@ -443,12 +447,17 @@ BitFont::~BitFont() {
     delete vao;
     delete ubo;
 }
+
 BitFont & BitFont::drawRect(int x, int y, int w, int h) {
+    return drawRect(x, y, w, h, 0.0f, 0.0f);
+}
+BitFont & BitFont::drawRect(int x, int y, int w, int h, float sx, float sy) {
     dirty = true;
     instances.push_back(BitFont::Instance{
         (float)(x - xrez/2), (float)(y - yrez/2), // 0,0 to bottomleft
         (float)w, (float)h,
         r, g, b, a,
+        sx, sy,
         95 });
     return *this;
 }
@@ -472,6 +481,7 @@ BitFont & BitFont::drawText(int x, int y, const char * text) {
             (float)(x - hw), (float)(y - (gl.yoffset-descenderHeight)*scale - hh), // 0,0 to bottomleft
             (float)gl.w*scale, (float)gl.h*scale,
             r, g, b, a,
+            0.0f, 0.0f,
             (int)asciiToGlyph[*text] });
         x += gl.xadvance * (int)scale;
         text++;
