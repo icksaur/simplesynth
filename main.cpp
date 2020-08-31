@@ -13,7 +13,6 @@ using namespace std;
 const int windowResolution = 512;
 int gate;
 
-SDL_Renderer * renderer;
 int graph[windowResolution];
 bool graphDirty = false;
 void renderWaveform(float * samples, int count) {
@@ -45,7 +44,7 @@ ExplicitDelay ed5{ 7919, 0.5f };
 StereoReverb stereoReverb;
 MoogFilter moogFilter(0.5f, 0.0f);
 VocalFilter vocalFilter;
-LFO lfo{ 0.01f, 0.5f };
+LFO lfo{ 0.02f, 0.5f };
 Fader fader;
 
 Sampler sampler(frequency * 10);
@@ -53,9 +52,6 @@ SamplerWriteHead writeHead(sampler);
 SamplerReadHead readHead(sampler);
 
 int mode = 0;
-
-float monoSamples[1024];
-
 bool isPlaying = false;
 bool isWriting = false;
 
@@ -71,7 +67,6 @@ void fillAudio(void *unused, Uint8 *stream, int len) {
         env.process(sample, gate);
         if (mode == 0) {
             vocalFilter.process(sample);
-            //lowpassFilter.process(sample);
             fader.process(sample, stereoSamples[i]);
         } else if (mode == 1) {
             vocalFilter.process(sample);
@@ -79,7 +74,6 @@ void fillAudio(void *unused, Uint8 *stream, int len) {
             lowpassFilter.process(stereoSamples[i].r);
             lowpassFilter.process(stereoSamples[i].l);
         } else {
-            //moogFilter.process(sample);
             fader.process(sample, stereoSamples[i]);
         }
 
@@ -316,7 +310,5 @@ int main(int argc, char *argv[]) {
         SDL_Delay(1000/60);
     }
 
-    SDL_GL_DeleteContext(context);
-    SDL_DestroyWindow(window);
     return 0;
 }
