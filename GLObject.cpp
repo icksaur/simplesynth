@@ -2,6 +2,7 @@
 #include "glxw.h"
 
 #include <vector>
+#include <stdexcept>
 
 void buildShaderProgram(unsigned & shaderProgram, const char * source, unsigned length);
 

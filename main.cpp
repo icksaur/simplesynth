@@ -1,17 +1,18 @@
-#include <cmath>
 #include <ctime>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_main.h>
 
+#include "synth.h"
 #include "GLObject.h"
 #include "glxw.h"
 #include "gui.h"
-#include "synth.h"
 
 using namespace std;
 
 const int windowResolution = 512;
 int gate;
+unsigned audioBufferSize;
+int sampleFrequency;
 
 int graph[windowResolution];
 bool graphDirty = false;
@@ -28,43 +29,47 @@ void renderWaveform(float * samples, int count) {
 }
 
 Note noteGen{ 0.001f, 4, 4 };
-Frequency noteFreq;
-ModulatingSignal modsig { 0, 1, 0, 0 };
-FixedSignal fixedsig { 0, 1, 0, 0 };
-Envelope env{0.05f, 0, 1, 0.05f, 0, 0, 4};
+Oscillator osc { 0, 1, 0, 0 };
+Envelope env{0.05f, 0, 1, 0.15f, 0, 0, 4};
 LowpassFilter lowpassFilter;
-AllPassFilter allPassFilter{ 0.5f };
-AllPassDelay allPassDelay{ -0.5f, 22050 };
 Delay delay{ 0.5f, 0.5f };
-ExplicitDelay ed1{ 229, 0.5f };
-ExplicitDelay ed2{ 1069, 0.5f };
-ExplicitDelay ed3{ 3181, 0.5f };
-ExplicitDelay ed4{ 6053, 0.5f };
-ExplicitDelay ed5{ 7919, 0.5f };
 StereoReverb stereoReverb;
 MoogFilter moogFilter(0.5f, 0.0f);
 VocalFilter vocalFilter;
-LFO lfo{ 0.02f, 0.5f };
+LFO lfo{ 1.0f, 0.5f };
 Fader fader;
 
 Sampler sampler(frequency * 10);
 SamplerWriteHead writeHead(sampler);
 SamplerReadHead readHead(sampler);
 
-int mode = 0;
+bool shouldPanic = false;
+int mode = 2;
 bool isPlaying = false;
 bool isWriting = false;
 
+float resonance = 0.5f;
+float cutoff = 0.5f;
+
 void fillAudio(void *unused, Uint8 *stream, int len) {
+    if (shouldPanic) {
+        stereoReverb.l.panic();
+        stereoReverb.r.panic();
+        moogFilter.panic();
+        delay.panic();
+        shouldPanic = false;
+    }
     float * floatStream = (float*)stream;
     StereoSample * stereoSamples = (StereoSample*)stream;
     for (unsigned i = 0; i < len/sizeof(*stereoSamples); i++) {
-        float sample;
-        noteGen.generate(sample);
-        lfo.process(sample);
-        noteFreq.process(sample);
-        modsig.process(sample);
-        env.process(sample, gate);
+        float l = lfo.generate();
+        float e = env.generate(gate);
+        float note = noteGen.generate() + l * 0.05f;
+        float f = noteFrequency(note);
+        float sample = osc.generate(f) * e;
+
+        moogFilter.set(cutoff + 0.3f * e, resonance + 0.2f * l);
+
         if (mode == 0) {
             vocalFilter.process(sample);
             fader.process(sample, stereoSamples[i]);
@@ -74,6 +79,8 @@ void fillAudio(void *unused, Uint8 *stream, int len) {
             lowpassFilter.process(stereoSamples[i].r);
             lowpassFilter.process(stereoSamples[i].l);
         } else {
+            moogFilter.process(sample);
+            delay.process(sample);
             fader.process(sample, stereoSamples[i]);
         }
 
@@ -115,6 +122,11 @@ int elementY;
 bool param(GUI & gui, float & value, const char * label) {
     bool result = gui.slider(value, 0, elementY, 100, 20);
     gui.label(110, elementY + 10, label);
+    elementY += step;
+    return result;
+}
+bool button(GUI & gui, const char* label) {
+    bool result = gui.button(0, elementY, 100, step, label);
     elementY += step;
     return result;
 }
@@ -257,10 +269,10 @@ int main(int argc, char *argv[]) {
         static float damp = 0.2f;
         static float fade = 0.5f;
 
-        param(gui, modsig.sine, "sine");
-        param(gui, modsig.square, "square");
-        param(gui, modsig.saw, "saw");
-        param(gui, modsig.noise, "noise");
+        param(gui, osc.sine, "sine");
+        param(gui, osc.square, "square");
+        param(gui, osc.saw, "saw");
+        param(gui, osc.noise, "noise");
 
         static float f1, f2, f3 = 0.1f;
         static float formants = 1.0f;
@@ -285,21 +297,16 @@ int main(int argc, char *argv[]) {
                 stereoReverb.r.set(room, damp);
             }
             param(gui, stereoReverb.dry, "dry");
-            if (gui.button(0, elementY, 100, 20, "panic")) {
-                stereoReverb.l.panic();
-                stereoReverb.r.panic();
-            }
             break;
         case 2:
-            if (param(gui, moogFilter.frequency, "filter")) {
-                moogFilter.set();
-            }
-            if (param(gui, moogFilter.resonance, "resonance")) {
-                moogFilter.set();
-            }
-            if (gui.button(0, elementY, 100, 20, filterNames[moogFilter.type])) {
+            param(gui, cutoff, "cutoff");
+            param(gui, resonance, "resonance");
+            if (button(gui, filterNames[moogFilter.type])) {
                 moogFilter.type = (MoogFilter::FilterType)((moogFilter.type + 1) % 3);
             }
+        }
+        if (button(gui, "panic")) {
+            shouldPanic = true;
         }
         if (isWriting) gui.label(0, elementY+step/2, "rec");
         else if (isPlaying) gui.label(0, elementY+step/2, "play");

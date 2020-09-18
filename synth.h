@@ -1,17 +1,22 @@
 #pragma once
 
+#include <cmath>
+#include <stdexcept>
+#include <memory>
+
 const int noteA4 = 48;
 const int frequency = 44100;
-unsigned int sampleFrequency = 0;
-unsigned int audioBufferSize = 0;
 const float envelopePopThreshold = 0.003f;
 const int delayBufferSize = 88211; // prime larger than 2 * 44100
+const float defaultRoom = 0.84f;
+const float allPassGain = 0.618f; // reciporical of golden ratio
+const unsigned MaxSamples = frequency * 60;
 
-float noteFreqency(float a) {
+float noteFrequency(float a) {
     return 27.5f * pow(2.0f, (float)a);
 }
-float noteFreqency(int a, int halfSteps) {
-    return noteFreqency((float)a + (float)halfSteps / 12.0f);
+float noteFrequency(int a, int halfSteps) {
+    return noteFrequency((float)a + (float)halfSteps / 12.0f);
 }
 
 struct StereoSample { float l, r; };
@@ -27,7 +32,7 @@ struct Envelope {
         state = 0; 
         t = 0;
     }
-    void process(float & sample, int gate) {
+    float generate(int gate) {
         float amp1;
         if (_gate && !gate) {
             if (state < 3) {
@@ -74,8 +79,8 @@ struct Envelope {
         if (abs(ampDif) > envelopePopThreshold) {
             amp1 = amp + copysign(envelopePopThreshold, ampDif);
         }
-        sample *= amp1;
         amp = amp1;
+        return amp1;
     }
 };
 
@@ -84,72 +89,34 @@ struct Note {
     float note;
     float note0;
     float t;
-    void generate(float * samples, int count) {
-        for (int i = 0; i < count; i++) {
-            generate(samples[i]);
-        }
-    }
-    void generate(float & sample) {
+    float generate() {
         float n = (note * t + note0 * (1 - t));
         t += 1 / (float)frequency / glide;
         if (t >= 1) {
             t = 1;
             note0 = note;
         }
-        sample = n;
+        return n;
     }
 };
 
 #define wrap(t) t = t > 1.0f ? t-1.0f : t
 
-struct Frequency {
-    float t;
-    void process(float & sample) {
-        sample = noteFreqency(sample);
-        t += 1 / sample;
-        wrap(t);
-    }
-};
-
 // Generates waveforms which will bend each sample by sample frequency.
-struct ModulatingSignal {
+struct Oscillator {
     float sine;
     float saw;
     float square;
     float noise;
     float t;
-    void process(float & sample) {
+    float generate(float f) {
         float h = sin(2.0f * (float)M_PI * t) * sine;
         h += (t / 0.5f - 1.0f) * saw;
         h += (t < 0.5 ? -1 : 1) * square;
         h += ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * noise;
-        t += sample / frequency;
-        sample = h;
+        t += f / frequency;
         wrap(t);
-    }
-};
-
-// Waveform will not change until period is over. 
-// Period is snapped to sample count.
-struct FixedSignal {
-    float sine;
-    float tri;
-    float square;
-    float noise;
-    float wavelength;
-    int cursor;
-    void process(float & sample) {
-        if (cursor >= wavelength - 1.0f) {
-            wavelength = frequency / sample;
-            cursor = 0;
-        }
-        float t = (float)cursor / (wavelength - 1.0f);
-        float h = sin(2.0f * (float)M_PI * t) * sine;
-        h += (2.0f * t - 1.0f) * tri;
-        h += (t < 0.5 ? -1.0f : 1.0f) * square;
-        h += ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * noise;
-        sample = h;
-        cursor++;
+        return h;
     }
 };
 
@@ -157,38 +124,15 @@ struct LFO {
     float amplitude;
     float period;
     float t;
-    void process(float & sample) {
-        sample += (float)sin(2.0 * (float)M_PI * t) * amplitude;
+    float generate() {
+        float val = (float)sin(2.0 * (float)M_PI * t) * amplitude;
         t += 1 / (float)frequency / period;
         wrap(t);
+        return val;
     }
 };
 
-const int window = 7;
-
-// A delay with no feedback (first two statements of process are reversed)
-struct CombFilter {
-    float decay;
-    int delay;
-    int read;
-    float buffer[delayBufferSize];
-    float process(float sample) {
-        buffer[(read + delay) % delayBufferSize] = sample * decay;
-        sample += buffer[read];
-        read++;
-        read %= delayBufferSize;
-        return sample;
-    }
-};
-
-struct BasicFilter {
-    float k;
-    float r;
-    void process(float & sample) {
-        sample = (sample - r) * k + r;
-        r = sample;
-    }
-};
+#define MIN(a, b) (a < b ? a : b)
 
 // The Scientist and Engineer's Guide to Digital Signal Processing, ch19, Steven W Smith
 // cutoff frequency should be f=0.5..1.0 : e^-2PIf (exp(2.0f * M_PI * f))
@@ -199,7 +143,7 @@ struct StagedFilter {
         k = 0.5f;
     }
     void process(float & sample) {
-        float k = min(this->k, 0.95f); // cache local K less than 0.5f
+        float k = MIN(this->k, 0.95f); // cache local K less than 0.5f
         float x = sample;
         sample = pow(1 - k, 4) * x;
         sample += (4.0f * k) * y[0];
@@ -213,6 +157,10 @@ struct StagedFilter {
         y[0] = sample;
     }
 };
+
+typedef StagedFilter LowpassFilter;
+
+#undef MIN
 
 struct BandpassFilter {
     float f; // frequency (resonant frequency / 44100)
@@ -245,10 +193,13 @@ struct MoogFilter {
     float f, p, q;
     float b0, b1, b2, b3, b4;
     float t1, t2;
-    MoogFilter(float _frequency, float _resonance) : frequency(_frequency),resonance(_resonance) {
-        set();
+    MoogFilter(float frequency, float resonance) {
+        set(frequency, resonance);
     }
-    void set() {
+    void panic() {
+        b0 = b1 = b2 = b3 = b4 = t1 = t2 = 0.0f;
+    }
+    void set(float frequency, float resonance) {
         q = 1.0f - frequency;
         p = frequency + 0.8f * frequency * q;
         f = p + p - 1.0f;
@@ -344,22 +295,6 @@ struct VocalFilter {
     }
 };
 
-typedef StagedFilter LowpassFilter;
-
-// explicit delay in sample count
-struct ExplicitDelay {
-    int delay;
-    float decay;
-    int read;
-    float buffer[delayBufferSize];
-    void process(float & sample) {
-        sample += buffer[read];
-        buffer[(read + delay) % delayBufferSize] = sample * decay;
-        read++;
-        read %= delayBufferSize;
-    }
-};
-
 struct AllPassDelay {
     float k;
     int delay;
@@ -417,8 +352,6 @@ struct LowpassFeedbackCombFilter {
 
 typedef LowpassFeedbackCombFilter LBCF;
 
-const float defaultRoom = 0.84f;
-const float allPassGain = 0.618f; // reciporical of golden ratio
 
 struct MonoReverb {
     LBCF * combs[8];
@@ -489,6 +422,10 @@ struct Delay {
     int write;
     float buffer[delayBufferSize];
 
+    void panic() {
+        std::fill(buffer, buffer + delayBufferSize, 0.0f);
+        write = 0;
+    }
     void process(float & sample) {
         float read = (float)write - (float)frequency * delay;
         if (read < 0) {
@@ -514,7 +451,6 @@ struct Fader {
     }
 };
 
-const unsigned MaxSamples = frequency * 60;
 
 struct Sampler {
     float * samples;

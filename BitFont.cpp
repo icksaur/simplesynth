@@ -1,6 +1,9 @@
 #include "GLObject.h"
-#include <GLXW/glxw.h>
 #include "BitFont.h"
+
+#include <GLXW/glxw.h>
+
+#include <stdexcept>
 
 // location in a texture of a glyph where 0,0 is the upper-left corner of the texture
 struct Glyph {
