@@ -26,6 +26,7 @@ struct SynthRoute {
 };
 
 #define PARAM_COUNT 6
+#define THROW_ON_INVALID_PARAM
 
 struct SynthNode {
     std::vector<SynthRoute> routes;
@@ -38,7 +39,12 @@ struct SynthNode {
         inputs[inputIndex].setting = StereoSample{ settingValue };
     }
     void addRoute(const SynthRoute route) {
-        routes.push_back(route);
+        if (route.target->inputs.size() < route.parameterIndex)
+            routes.push_back(route);
+#ifdef THROW_ON_INVALID_PARAM
+        else
+            throw std::runtime_error("target has no such parameter at given index");
+#endif
     }
     void accumulate(int index, StereoSample value) {
         inputs[index].accumulator = inputs[index].accumulator + value;
