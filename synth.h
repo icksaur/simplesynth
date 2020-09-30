@@ -405,6 +405,10 @@ struct StereoReverb {
             r.allpass[i]->delay += 23;
         }
     }
+    void set(float room, float damp) {
+        l.set(room, damp);
+        r.set(room, damp);
+    }
     void process(float sample, StereoSample & stereoSample) {
         stereoSample.l = stereoSample.r = sample;
         r.process(stereoSample.r);

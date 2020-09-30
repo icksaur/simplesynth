@@ -130,9 +130,11 @@
     <ClCompile Include="glxw.c" />
     <ClCompile Include="gui.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="SynthNode.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="synth.h" />
+    <ClInclude Include="SynthNode.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

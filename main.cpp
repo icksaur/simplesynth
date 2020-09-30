@@ -3,6 +3,7 @@
 #include <SDL2/SDL_main.h>
 
 #include "synth.h"
+#include "SynthNode.h"
 #include "GLObject.h"
 #include "glxw.h"
 #include "gui.h"
