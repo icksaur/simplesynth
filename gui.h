@@ -2,14 +2,15 @@
 
 #include "BitFont.h"
 
-struct Rect {
-    int x, y, w, h;
-    bool contains(int _x, int _y);
-};
 
 class GUI {
+    struct Rect {
+        int x, y, w, h;
+        bool contains(int _x, int _y);
+    };
+
 public:
-    GUI::GUI();
+    GUI();
     void pushMouseDown(int which, int x, int y);
     void pushMouseUp(int which, int x, int y);
     void pushMouseMotion(int x, int y);

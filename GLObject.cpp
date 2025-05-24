@@ -3,6 +3,7 @@
 
 #include <vector>
 #include <stdexcept>
+#include <cstring>
 
 void buildShaderProgram(unsigned & shaderProgram, const char * source, unsigned length);
 

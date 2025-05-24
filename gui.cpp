@@ -1,9 +1,11 @@
 #include "gui.h"
 
+#include <cstdlib>
+
 static void clamp(float & v, float min, float max) { v = v < min ? min : (v > max ? max : v); }
 static void clamp(int & v, int min, int max) { v = v < min ? min : (v > max ? max : v); }
 
-bool Rect::contains(int _x, int _y) {
+bool GUI::Rect::contains(int _x, int _y) {
     int hw = w / 2;
     if (abs(x + hw - _x) > hw) return false;
     int hh = h / 2;

@@ -1,8 +1,8 @@
 #include "GLObject.h"
 #include "BitFont.h"
+#include "glxw.h"
 
-#include <GLXW/glxw.h>
-
+#include <cstring>
 #include <stdexcept>
 
 // location in a texture of a glyph where 0,0 is the upper-left corner of the texture
@@ -360,7 +360,7 @@ struct sprite_definition {
 vec4 uvco;
 };
 layout(binding=0, std140) uniform sprite_data {
-sprite_definition sprites[];
+sprite_definition sprites[256];
 };
 layout(location=0) uniform mat4 viewProjection;
 layout(location=0) in vec2 vertex; // object-space vertex of quad, [0,0] to [1,1]
@@ -386,9 +386,10 @@ textureCoordinate.y = sprite.uvco.t + sprite.uvco.q * vertex.y;
 uniform sampler2DArray textures;
 in vec2 textureCoordinate;
 in vec4 ocolor;
+out vec4 fragColor;
 void main() {
 vec4 texel = texture(textures, vec3(textureCoordinate.st, 0));
-gl_FragColor = ocolor * texel;
+fragColor = ocolor * texel;
 }
 #endif
 )";

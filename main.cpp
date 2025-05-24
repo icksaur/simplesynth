@@ -110,10 +110,11 @@ uvco = uv;
 gl_Position = vec4(vertex.xy, 0, 1);
 }
 #elif FRAGMENT_SHADER
+out vec4 fragColor;
 layout(binding = 0) uniform sampler2DArray textures;
 in vec2 uvco;
 void main() {
-    gl_FragColor = texture(textures, vec3(uvco.st, 0));
+    fragColor = texture(textures, vec3(uvco.st, 0));
 }
 #endif
 )";
