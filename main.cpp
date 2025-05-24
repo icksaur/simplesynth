@@ -3,7 +3,6 @@
 #include <SDL2/SDL_main.h>
 
 #include "synth.h"
-#include "SynthNode.h"
 #include "GLObject.h"
 #include "glxw.h"
 #include "gui.h"
@@ -263,7 +262,8 @@ int main(int argc, char *argv[]) {
         vao.bind();
         glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
-        static int x, y; // window drag
+        static int x = windowResolution/2-125;
+        static int y = windowResolution/2-150;
         static char krtString[12];
         gui.start(x, y, 250, 300, "params");
         elementY = 0;

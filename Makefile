@@ -17,7 +17,7 @@ INCLUDES = $(SDL2_CFLAGS)
 LIBS = $(SDL2_LIBS) $(OPENGL_LIBS)
 
 # Source files
-CPP_SOURCES = BitFont.cpp GLObject.cpp gui.cpp main.cpp SynthNode.cpp
+CPP_SOURCES = BitFont.cpp GLObject.cpp gui.cpp main.cpp SynthNode.cpp synth.cpp
 C_SOURCES = glxw.c
 
 # Object files
